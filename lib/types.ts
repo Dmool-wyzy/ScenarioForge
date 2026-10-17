@@ -1,0 +1,12 @@
+export const REQUIRED_WORKSPACE_FILENAMES = ["README.md", "RESEARCH.md", "SOURCES.md"] as const;
+export type { SearchProviderName, SearchSource, SearchResult } from "./search/types";
+export type WorkspaceFilename = string;
+export type FilePlanItem = { filename: string; purpose: string; priority: "required" | "recommended" | "optional"; contentOutline: string[] };
+export type Constraints = { deadline?: string; teamSize?: number; budget?: string; techPreference?: string };
+export type UploadedText = { filename: string; extractedText: string };
+export type Source = import("./search/types").SearchSource & { accessedAt: string };
+export type EvidenceCard = { code: string; question: string; claim: string; sources: Source[]; confidence: string; impact?: string; status: string };
+export type WorkspaceFile = { filename: string; content: string; version: number; updatedBy: string; changeNote: string | null; lockedBy: string | null; updatedAt: string };
+export type ResearchEvent = { id: string; sequence: number; type: string; message: string; payload: unknown; createdAt: string };
+export type Clarification = { id: string; groupId: string; question: string; type: string; options: string[] | null; priority: string; whyNeeded: string; defaultAssumption: string | null; answer: string | null; status: string; expiresAt: string };
+export type ResearchSnapshot = { id: string; title: string; goal: string; status: string; currentStage: number; summary: string | null; filePlan: FilePlanItem[]; files: WorkspaceFile[]; events: ResearchEvent[]; evidence: EvidenceCard[]; clarifications: Clarification[] };

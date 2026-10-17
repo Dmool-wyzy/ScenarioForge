@@ -1,0 +1,284 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model ResearchPackage {
+  id             String   @id @default(cuid())
+  title          String
+  goal           String
+  status         String   @default("created")
+  scenarioType   String?
+  constraints    String?
+  currentStage   Int      @default(0)
+  uploadedFiles  String   @default("[]")
+  researchPlan   String?
+  sessionId      String   @unique @default(cuid())
+  sessionState   String   @default("[]")
+  summary        String?
+  taskState      String   @default("idle")
+  pendingMessage String?
+  leaseOwner     String?
+  leaseUntil     DateTime?
+  eventSequence  Int      @default(0)
+  searchCount    Int      @default(0)
+  questionCount  Int      @default(0)
+  contextVersion Int      @default(0)
+  activeIndexId  String?
+  nextEvidenceNumber Int  @default(0)
+  planVersion    Int      @default(1)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  files          WorkspaceFile[]
+  events         ResearchEvent[]
+  clarifications Clarification[]
+  evidence       Evidence[]
+  researchQuestions ResearchQuestion[]
+  sources        Source[]
+  sourceRevisions SourceRevision[]
+  chunks         EvidenceChunk[]
+  embeddingIndexes EmbeddingIndex[]
+  embeddings     ChunkEmbedding[]
+  citations      Citation[]
+  knowledgeJobs  KnowledgeJob[]
+  retrievalLogs  RetrievalLog[]
+}
+
+model WorkspaceFile {
+  id          String   @id @default(cuid())
+  packageId   String
+  filename    String
+  content     String
+  version     Int      @default(1)
+  updatedBy   String   @default("agent")
+  changeNote  String?
+  lockedBy    String?
+  lockToken   String?
+  lockExpiresAt DateTime?
+  userContent String?
+  contextVersionUsed Int?
+  updatedAt   DateTime @updatedAt
+  createdAt   DateTime @default(now())
+
+  package ResearchPackage @relation(fields: [packageId], references: [id], onDelete: Cascade)
+
+  @@unique([packageId, filename])
+}
+
+model Evidence {
+  id         String   @id @default(cuid())
+  packageId  String
+  code       String
+  question   String
+  questionId String?
+  claim      String
+  sources    String
+  confidence String
+  impact     String?
+  status     String   @default("verified")
+  createdAt  DateTime @default(now())
+
+  package ResearchPackage @relation(fields: [packageId], references: [id], onDelete: Cascade)
+  researchQuestion ResearchQuestion? @relation(fields: [questionId, packageId], references: [id, packageId], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([packageId, code])
+}
+
+model Clarification {
+  id                String    @id @default(cuid())
+  packageId         String
+  groupId           String
+  question          String
+  questionId        String
+  type              String    @default("text")
+  options           String?
+  priority          String    @default("optional")
+  whyNeeded         String
+  defaultAssumption String?
+  answer            String?
+  answeredBy        String?
+  status            String    @default("waiting")
+  createdAt         DateTime  @default(now())
+  answeredAt        DateTime?
+  expiresAt         DateTime
+
+  package ResearchPackage @relation(fields: [packageId], references: [id], onDelete: Cascade)
+
+  @@index([packageId, groupId])
+}
+
+model ResearchEvent {
+  id        String   @id @default(cuid())
+  packageId String
+  sequence  Int
+  type      String
+  message   String
+  payload   String?
+  createdAt DateTime @default(now())
+
+  package ResearchPackage @relation(fields: [packageId], references: [id], onDelete: Cascade)
+
+  @@unique([packageId, sequence])
+}
+
+model ResearchQuestion {
+  id String @id @default(cuid())
+  packageId String
+  ordinal Int
+  question String
+  searchQueries String @default("[]")
+  priority String @default("high")
+  status String @default("pending")
+  attemptCount Int @default(0)
+  lastError String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  package ResearchPackage @relation(fields: [packageId], references: [id], onDelete: Cascade)
+  evidence Evidence[]
+  @@unique([id, packageId])
+  @@unique([packageId, ordinal])
+}
+
+model Source {
+  id String @id @default(cuid())
+  packageId String
+  sourceType String
+  sourceKey String
+  title String
+  url String?
+  metadata String @default("{}")
+  currentRevisionId String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  package ResearchPackage @relation(fields: [packageId], references: [id], onDelete: Cascade)
+  revisions SourceRevision[]
+  @@unique([id, packageId])
+  @@unique([packageId, sourceKey])
+  @@index([packageId, sourceType])
+}
+
+model SourceRevision {
+  id String @id @default(cuid())
+  packageId String
+  sourceId String
+  revision Int
+  rawContent String
+  contentHash String
+  fetchedAt DateTime @default(now())
+  metadata String @default("{}")
+  package ResearchPackage @relation(fields: [packageId], references: [id], onDelete: Cascade)
+  source Source @relation(fields: [sourceId, packageId], references: [id, packageId], onDelete: Cascade)
+  chunks EvidenceChunk[]
+  jobs KnowledgeJob[]
+  @@unique([id, packageId])
+  @@unique([sourceId, contentHash])
+  @@unique([sourceId, revision])
+}
+
+model EvidenceChunk {
+  id String @id @default(cuid())
+  packageId String
+  sourceRevisionId String
+  chunkIndex Int
+  chunkerVersion String
+  evidenceNumber Int
+  content String
+  tokenCount Int
+  metadata String @default("{}")
+  createdAt DateTime @default(now())
+  package ResearchPackage @relation(fields: [packageId], references: [id], onDelete: Cascade)
+  revision SourceRevision @relation(fields: [sourceRevisionId, packageId], references: [id, packageId], onDelete: Cascade)
+  embeddings ChunkEmbedding[]
+  citations Citation[]
+  @@unique([id, packageId])
+  @@unique([packageId, evidenceNumber])
+  @@unique([sourceRevisionId, chunkerVersion, chunkIndex])
+}
+
+model EmbeddingIndex {
+  id String @id @default(cuid())
+  packageId String
+  generation Int
+  provider String
+  model String
+  baseUrlFingerprint String
+  dimensions Int?
+  chunkerVersion String
+  status String @default("building")
+  errorCode String?
+  createdAt DateTime @default(now())
+  activatedAt DateTime?
+  package ResearchPackage @relation(fields: [packageId], references: [id], onDelete: Cascade)
+  embeddings ChunkEmbedding[]
+  jobs KnowledgeJob[]
+  @@unique([id, packageId])
+  @@unique([packageId, generation])
+}
+
+model ChunkEmbedding {
+  id String @id @default(cuid())
+  packageId String
+  indexId String
+  chunkId String
+  vector String
+  vectorNorm Float
+  package ResearchPackage @relation(fields: [packageId], references: [id], onDelete: Cascade)
+  index EmbeddingIndex @relation(fields: [indexId, packageId], references: [id, packageId], onDelete: Cascade)
+  chunk EvidenceChunk @relation(fields: [chunkId, packageId], references: [id, packageId], onDelete: Cascade)
+  @@unique([indexId, chunkId])
+  @@index([packageId, indexId, id])
+}
+
+model Citation {
+  id String @id @default(cuid())
+  packageId String
+  chunkId String
+  documentName String
+  fileVersion Int
+  section String @default("")
+  createdAt DateTime @default(now())
+  package ResearchPackage @relation(fields: [packageId], references: [id], onDelete: Cascade)
+  chunk EvidenceChunk @relation(fields: [chunkId, packageId], references: [id, packageId], onDelete: Cascade)
+  @@unique([packageId, documentName, fileVersion, section, chunkId])
+}
+
+model KnowledgeJob {
+  id String @id @default(cuid())
+  packageId String
+  sourceRevisionId String
+  indexId String?
+  jobKey String @unique
+  status String @default("pending")
+  attempts Int @default(0)
+  nextAttemptAt DateTime @default(now())
+  leaseOwner String?
+  leaseUntil DateTime?
+  errorCode String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  package ResearchPackage @relation(fields: [packageId], references: [id], onDelete: Cascade)
+  revision SourceRevision @relation(fields: [sourceRevisionId, packageId], references: [id, packageId], onDelete: Cascade)
+  index EmbeddingIndex? @relation(fields: [indexId, packageId], references: [id, packageId], onDelete: NoAction, onUpdate: NoAction)
+  @@index([packageId, status, nextAttemptAt])
+}
+
+model RetrievalLog {
+  id String @id @default(cuid())
+  packageId String
+  query String
+  topK Int
+  sourceTypes String
+  indexId String?
+  resultEvidenceIds String
+  scores String
+  durationMs Int
+  status String
+  createdAt DateTime @default(now())
+  package ResearchPackage @relation(fields: [packageId], references: [id], onDelete: Cascade)
+  @@index([packageId, createdAt])
+}

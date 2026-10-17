@@ -1,0 +1,16 @@
+[project]
+name = "scenarioforge-mcp"
+version = "0.1.0"
+description = "ScenarioForge research tools over Streamable HTTP"
+requires-python = ">=3.11"
+dependencies = [
+  "fastmcp>=2.14,<4",
+  "openai>=2,<3",
+  "httpx>=0.28,<1",
+  "python-dotenv>=1.1,<2",
+  "pydantic>=2.11,<3",
+  "ddgs>=9.16.0",
+]
+
+[tool.uv]
+package = false

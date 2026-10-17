@@ -1,0 +1,60 @@
+{
+  "name": "scenarioforge",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "check:integration": "node --env-file-if-exists=.env.local scripts/smoke.mjs",
+    "check:browser": "node --env-file-if-exists=.env.local node_modules/@playwright/test/cli.js test",
+    "check:agent": "node --env-file-if-exists=.env.local scripts/agent-e2e.mjs",
+    "db:generate": "node --env-file-if-exists=.env.local node_modules/prisma/build/index.js generate",
+    "db:migrate": "node --env-file-if-exists=.env.local node_modules/prisma/build/index.js migrate dev",
+    "db:deploy": "node --env-file-if-exists=.env.local node_modules/prisma/build/index.js migrate deploy",
+    "check:search": "node --conditions=react-server --import tsx --test scripts/check-search.ts",
+    "check:agent-tools": "node --conditions=react-server --import tsx --test scripts/check-agent-tools.ts",
+    "check:model-transport": "node --conditions=react-server --import tsx --test scripts/check-model-transport.ts",
+    "check:model-config": "node --conditions=react-server --import tsx --test scripts/check-model-config.ts",
+    "check:ddgs": "mcp-server\\.venv\\Scripts\\python.exe scripts/check_ddgs.py",
+    "check:rag": "node --conditions=react-server --import tsx --test scripts/check-rag.ts",
+    "rag:backfill": "node --conditions=react-server --import tsx scripts/backfill-rag.ts",
+    "cli": "node --env-file-if-exists=.env.local scripts/scenarioforge-cli.mjs",
+    "check:rag-agent": "node --env-file-if-exists=.env.local scripts/rag-agent-e2e.mjs"
+  },
+  "dependencies": {
+    "@openai/agents": "^0.20.0",
+    "@prisma/client": "^6.19.0",
+    "@uiw/react-md-editor": "^4.1.2",
+    "jszip": "^3.10.2",
+    "mammoth": "^1.13.0",
+    "next": "^16.0.0",
+    "openai": "^7.34.0",
+    "pdf-parse": "^2.4.5",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "server-only": "^0.0.1",
+    "undici": "^7.30.1",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.64.1",
+    "@tailwindcss/postcss": "^4.1.0",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "eslint": "^9.0.0",
+    "eslint-config-next": "^16.0.0",
+    "prisma": "^6.19.0",
+    "tailwindcss": "^4.1.0",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.0"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  }
+}
