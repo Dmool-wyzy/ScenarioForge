@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 import { getSearchProvider } from "../lib/search/index";
+import { DeepSeekProvider } from "../lib/search/deepseek";
 import { completedSearchQuestions } from "../lib/search/progress";
 import { SearchProviderError, type SearchErrorCode } from "../lib/search/types";
 
@@ -60,6 +61,14 @@ test("Factory validates only the chosen Provider, rejects invalid configuration"
   process.env.SEARCH_PROVIDER = "unknown"; assert.throws(getSearchProvider, /SEARCH_PROVIDER/);
 });
 
+test("Project-level DeepSeek opt-in overrides the global provider without changing its default", () => {
+  configure("mock");
+  const config = { DEEPSEEK_SEARCH_ENABLED: true, OPENAI_API_KEY: "fixture-key", MODEL_VALIDATED_ADDRESS: "93.184.216.34" };
+  assert.equal(getSearchProvider(config).name, "deepseek");
+  assert.equal(getSearchProvider().name, "mock");
+  assert.throws(() => getSearchProvider({ DEEPSEEK_SEARCH_ENABLED: true }), rejects("missing_config"));
+});
+
 test("SearXNG encodes query, maps fields, strips raw fields, filters/deduplicates URLs and limits results", async () => {
   configure("searxng"); process.env.SEARXNG_URL = "http://localhost:8888/";
   globalThis.fetch = async (input, init) => {
@@ -83,6 +92,51 @@ test("Tavily carries key/basic depth and requested maximum, maps normalized sour
     return Response.json({ results: [{ ...row, published_date: row.publishedDate, score: 0.8 }] });
   };
   assert.deepEqual((await getSearchProvider().search({ query: "study plan", maxResults: 6 })).results, [{ title: row.title, url: row.url, snippet: row.content, publishedDate: row.publishedDate }]);
+});
+
+test("DeepSeek Search sends one bounded search request and maps summaries without page fetching", async () => {
+  configure("mock");
+  globalThis.fetch = async () => { throw new Error("DeepSeek test must use its injected transport"); };
+  let calls = 0;
+  const provider = new DeepSeekProvider("fixture-secret-key", "93.184.216.34", async (input, init) => {
+    calls++;
+    assert.equal(String(input), "https://api.deepseek.com/v1/tools/search");
+    assert.equal(new Headers(init?.headers).get("authorization"), "Bearer fixture-secret-key");
+    assert.equal(init?.redirect, "error");
+    assert.equal(init?.cache, "no-store");
+    assert.ok(init?.signal);
+    assert.deepEqual(JSON.parse(String(init?.body)), { query: "申威处理器 官方技术资料", count: 3, need_content: false });
+    return Response.json({ results: [
+      { title: "官方资料", url: "https://swcpu.cn/docs", snippet: "短摘要", summary: "与查询直接相关的较长摘要。", date: "2026-11-01T00:00:00Z", authority: 4, rerank_score: 2.6 },
+      { title: "Filtered", url: "file:///private", summary: "not a web result" },
+    ] });
+  });
+  const result = await provider.search({ query: "申威处理器 官方技术资料", maxResults: 3 });
+  assert.equal(calls, 1);
+  assert.equal(result.provider, "deepseek");
+  assert.deepEqual(result.results, [{ title: "官方资料", url: "https://swcpu.cn/docs", snippet: "与查询直接相关的较长摘要。", publishedDate: "2026-11-01T00:00:00Z" }]);
+});
+
+test("DeepSeek Search enforces its 128-character limit and sanitizes API failures", async () => {
+  configure("mock");
+  let calls = 0;
+  const fetcher: typeof fetch = async () => {
+    calls++;
+    return Response.json({ results: [{ title: "A source", url: row.url, snippet: row.content }] });
+  };
+  const provider = new DeepSeekProvider("fixture-secret-key", "93.184.216.34", fetcher);
+  await assert.rejects(provider.search({ query: "测".repeat(129), maxResults: 1 }), rejects("invalid_response", /128/));
+  assert.equal(calls, 0);
+
+  for (const [status, code] of [[401, "unauthorized"], [402, "upstream_error"], [429, "rate_limited"], [500, "upstream_error"]] as const) {
+    const failing = new DeepSeekProvider("fixture-secret-key", "93.184.216.34", async () => new Response("secret upstream body", { status }));
+    await assert.rejects(failing.search({ query: "public test", maxResults: 1 }), (error: unknown) =>
+      rejects(code)(error) && error instanceof Error && !error.message.includes("secret upstream body") && !error.message.includes("fixture-secret-key"));
+  }
+  const empty = new DeepSeekProvider("fixture-secret-key", "93.184.216.34", async () => Response.json({ results: [] }));
+  await assert.rejects(empty.search({ query: "public test", maxResults: 1 }), rejects("empty_results"));
+  const invalid = new DeepSeekProvider("fixture-secret-key", "93.184.216.34", async () => Response.json({ results: [{ url: "file:///private" }] }));
+  await assert.rejects(invalid.search({ query: "public test", maxResults: 1 }), rejects("invalid_response"));
 });
 
 for (const provider of ["searxng", "tavily", "ddgs"] as const) {

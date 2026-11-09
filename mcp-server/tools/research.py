@@ -1,6 +1,6 @@
 import json
 from backend import backend, BackendSearchError
-from llm import structured
+from llm import structured, ModelFailure
 from schemas import ResearchPlan, RagResearchPlan, SearchQueries, EvidenceResult, REQUIRED_FILENAMES
 
 
@@ -25,17 +25,20 @@ async def create_research_package(goal: str = "", constraints: dict | None = Non
         uploaded = context["uploadedFiles"]
         if context.get("ragEnabled"):
             uploaded = [{"filename": row["filename"], "extractedText": row["extractedText"][:2000], "truncated": len(row["extractedText"]) > 2000} for row in uploaded]
-        plan = (await structured(
-            """你是研究规划专家。使用中文，把用户目标拆成 3–6 个具体问题；规划先检索再创作，不编造事实。
+        try:
+            plan = (await structured(
+                """你是研究规划专家。使用中文，按目标复杂度拆成 1–6 个具体研究问题，不凑数量；用户明确提出数量要求时，在该范围内遵守。规划先检索再创作，不编造事实。
 生成正文前输出 filePlan，每个文件必须有 filename、purpose、priority(required/recommended/optional)、contentOutline(内容要点列表)。
 始终包含 README.md(项目概览与导航)、RESEARCH.md(研究问题、证据、冲突与缺口)、SOURCES.md(来源索引、摘要和访问时间)，三者 priority=required。
 根据场景动态选择其他文件，例如 DECISIONS.md、PLAN.md、TODO.md、RISKS.md、DATA_MODEL.md、API_DESIGN.md、EXPERIMENT_PLAN.md、BUDGET.md、TIMELINE.md，也可以规划其他有意义的 Markdown 文件。
 示例不是必选清单；简单目标只需三份默认文档。不要凑数量，不要把相同内容拆成多个文件；每份只负责一个明确主题，其余文件通过链接引用。
 required 表示必须，recommended 表示场景建议，optional 表示补充；只列入确实准备生成且有具体用途的文件。研究过程中发现新重要主题，可以先追加文件计划再生成。
 文件名使用英文字母、数字、下划线或连字符，以 .md 结尾，不带目录。""",
-            json.dumps({"goal": context["goal"], "constraints": context["constraints"], "uploadedFiles": uploaded}, ensure_ascii=False),
-            RagResearchPlan if context.get("ragEnabled") else ResearchPlan,
-        )).model_dump()
+                json.dumps({"goal": context["goal"], "constraints": context["constraints"], "uploadedFiles": uploaded}, ensure_ascii=False),
+                RagResearchPlan if context.get("ragEnabled") else ResearchPlan, package_id=package_id,
+            )).model_dump()
+        except ModelFailure as error:
+            return {"status": "planning_failed", "code": error.code, "message": str(error)}
         plan = await backend(package_id, "plan", plan)
     return {"packageId": package_id, "status": "researching", **plan}
 
@@ -57,9 +60,9 @@ async def search_scenario(package_id: str, question: str = "", max_results: int 
     queries = await structured(
         "为研究问题生成 2–3 个简短、互补的联网搜索查询。每条只保留核心实体名称和一个检索目的，通常 3–8 个关键词；"
         "不要把研究问题的所有字段、同义词或多个数据集名称堆进同一条查询。第一条查核心实体的官方来源，"
-        "后续查询分别补充论文、许可等细节，优先官方来源，选择合适语言。"
-        "例如：SHWD hard hat workers dataset github；SHWD dataset paper；SHWD dataset license。",
-        question, SearchQueries,
+        "后续查询按当前问题补充必要细节，优先官方来源，选择合适语言。"
+        "只使用当前研究问题涉及的实体，不引入无关项目或数据集名称。",
+        question, SearchQueries, package_id=package_id,
     )
     results = []
     seen = set()
@@ -86,7 +89,7 @@ async def search_scenario(package_id: str, question: str = "", max_results: int 
         return {"evidence": [], "gap": "未找到可靠来源，该问题结论必须标记为待确认。"}
     drafts = await structured(
         "用中文根据搜索摘要生成证据卡。仅引用给出的来源索引（从 0 开始），禁止生成 URL。只将摘要直接支持的结论标记 verified；建议为 inference，不确定为 unconfirmed。来源数量不代表真实性，谨慎使用 high 置信度。含 [MOCK SEARCH RESULT] 标记的资料仅用于测试，必须标记 unconfirmed、low，并在结论注明测试数据，不能当作真实事实。",
-        json.dumps({"question": question, "sources": results}, ensure_ascii=False), EvidenceResult,
+        json.dumps({"question": question, "sources": results}, ensure_ascii=False), EvidenceResult, package_id=package_id,
     )
     if not drafts.cards:
         provider = result["provider"]

@@ -35,5 +35,6 @@ export function sourceKeyForUrl(value: string) {
   const url = new URL(value); url.hash = "";
   for (const key of [...url.searchParams.keys()]) if (/^utm_|^(fbclid|gclid)$/i.test(key)) url.searchParams.delete(key);
   url.searchParams.sort();
-  return `web:${url.toString().replace(/\/$/, "")}`;
+  const key = `web:${url.toString().replace(/\/$/, "")}`;
+  return `web:${createHash("sha256").update(key).digest("hex")}`;
 }

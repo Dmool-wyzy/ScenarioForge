@@ -1,0 +1,1 @@
+ALTER TABLE `UserProfile` MODIFY `avatar` MEDIUMTEXT NOT NULL DEFAULT ('leaf');

@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "mcp-server"))
 
 from backend import BackendSearchError
+from llm import ModelFailure
 from schemas import EvidenceResult, SearchQueries
 from tools.research import create_research_package, search_scenario
 
@@ -28,6 +29,16 @@ class CreationChecks(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(ValueError, "goal"):
                 await create_research_package()
         backend.assert_not_awaited()
+
+    async def test_planning_model_failure_returns_safe_reason_without_saving_a_plan(self):
+        backend = AsyncMock(return_value={"uploadedFiles": [], "goal": "测试目标", "constraints": {}})
+        message = "模型连续返回不符合格式的内容，已停止；已保存文件保留。"
+        model = AsyncMock(side_effect=ModelFailure("invalid_model_output", message))
+        with patch("tools.research.backend", backend), patch("tools.research.structured", model):
+            result = await create_research_package(package_id="owned-package")
+        self.assertEqual(result, {"status": "planning_failed", "code": "invalid_model_output", "message": message})
+        backend.assert_awaited_once_with("owned-package", "context")
+        model.assert_awaited_once()
 
 
 class EvidenceChecks(unittest.IsolatedAsyncioTestCase):
@@ -57,6 +68,8 @@ class EvidenceChecks(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(operations[0], ("begin_search", {"question_index": 0}))
         self.assertEqual(operations[1][1]["question"], "Saved question")
         self.assertEqual(model.await_args.args[1], "Saved question")
+        self.assertNotIn("SHWD", model.await_args.args[0])
+        self.assertIn("只使用当前研究问题涉及的实体", model.await_args.args[0])
 
     async def run_queries(self, outcomes):
         searches = []

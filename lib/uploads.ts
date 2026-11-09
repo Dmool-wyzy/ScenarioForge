@@ -2,12 +2,14 @@ import "server-only";
 import { ApiError } from "./errors";
 import { readBytes } from "./validation";
 import type { UploadedText } from "./types";
+import { validateDocxArchive } from "./docx";
 
-export async function parseResearchUpload(request: Request) {
+export async function parseResearchUpload(request: Request, beforeExtract?: (projectId: unknown) => Promise<void>) {
   const bytes = await readBytes(request, 26 * 1024 * 1024);
   let form: FormData;
   try { form = await new Response(new Uint8Array(bytes), { headers: { "Content-Type": request.headers.get("content-type") ?? "" } }).formData(); }
   catch { throw new ApiError(400, "上传表单无法解析。"); }
+  if (beforeExtract) await beforeExtract(form.get("projectId"));
   const files = form.getAll("files");
   if (files.length > 5) throw new ApiError(400, "最多上传 5 个文件。");
   const extracted: UploadedText[] = [];
@@ -29,6 +31,7 @@ export async function parseResearchUpload(request: Request) {
         finally { await parser.destroy(); }
       } else {
         if (buffer[0] !== 0x50 || buffer[1] !== 0x4b) throw new Error("invalid DOCX signature");
+        await validateDocxArchive(buffer);
         const mammoth = await import("mammoth");
         text = (await mammoth.extractRawText({ buffer })).value;
       }
@@ -40,5 +43,8 @@ export async function parseResearchUpload(request: Request) {
   let constraints: unknown;
   try { constraints = JSON.parse(String(form.get("constraints") ?? "{}")); }
   catch { throw new ApiError(400, "约束条件格式无效。"); }
-  return { goal: form.get("goal"), constraints, files: extracted };
+  let sharedKnowledgeIds: unknown;
+  try { sharedKnowledgeIds = JSON.parse(String(form.get("sharedKnowledgeIds") ?? "[]")); }
+  catch { throw new ApiError(400, "项目共享资料选择格式无效。"); }
+  return { projectId: form.get("projectId"), goal: form.get("goal"), constraints, files: extracted, sharedKnowledgeIds };
 }

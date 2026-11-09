@@ -26,6 +26,7 @@ export function requireConfigured(provider: SearchProvider) {
   const messages = {
     searxng: process.env.SEARXNG_URL?.trim() ? "SEARXNG_URL 无效，必须是 HTTP/HTTPS 服务地址，例如：http://localhost:8888。" : "缺少 SEARXNG_URL。请在 .env.local 中设置，例如：\nSEARXNG_URL=http://localhost:8888",
     tavily: "缺少 TAVILY_API_KEY。请在 .env.local 中设置，或将 SEARCH_PROVIDER 改为 searxng / ddgs / mock。",
+    deepseek: "DeepSeek Search 需要项目内启用该功能，并配置有效的 DeepSeek API Key 和已验证的 API 地址。",
     ddgs: "DDGS Provider 需要 ScenarioForge Python MCP Server。请设置有效的 SCENARIOFORGE_MCP_URL 和至少 32 字符的 SCENARIOFORGE_INTERNAL_TOKEN，并确认服务支持 /internal/search/ddgs。",
     mock: "Mock 搜索配置无效。",
   };
@@ -62,15 +63,19 @@ export function searchResult(provider: SearchProviderName, query: string, rows: 
   return { provider, query, results: normalizeSources(provider, rows, maxResults), fetchedAt: new Date().toISOString() };
 }
 
-export async function fetchSearchJson(provider: SearchProviderName, url: string | URL, init?: RequestInit): Promise<unknown> {
+export async function fetchSearchJson(provider: SearchProviderName, url: string | URL, init?: RequestInit, fetcher: typeof fetch = fetch): Promise<unknown> {
   try {
     // The local DDGS bridge enforces SEARCH_TIMEOUT_MS itself. Leave time for
     // its structured error response before the caller aborts the connection.
-    const response = await fetch(url, { ...init, cache: "no-store", redirect: "error", signal: AbortSignal.timeout(timeoutMs(provider) + (provider === "ddgs" ? 5000 : 0)) });
+    const response = await fetcher(url, { ...init, cache: "no-store", redirect: "error", signal: AbortSignal.timeout(timeoutMs(provider) + (provider === "ddgs" ? 5000 : 0)) });
     if (response.status === 401 || response.status === 403) {
-      const message = provider === "searxng" && response.status === 403 ? "SearXNG 返回 403。请检查 settings.yml 的 search.formats 是否包含 json（format=json）。" : provider === "tavily" ? "搜索服务鉴权失败，请检查 TAVILY_API_KEY。" : "搜索服务鉴权失败，请检查服务访问权限及内部凭据。";
+      const message = provider === "searxng" && response.status === 403 ? "SearXNG 返回 403。请检查 settings.yml 的 search.formats 是否包含 json（format=json）。"
+        : provider === "tavily" ? "搜索服务鉴权失败，请检查 TAVILY_API_KEY。"
+          : provider === "deepseek" ? "DeepSeek Search 鉴权失败，请检查项目 API Key 和账户权限。"
+            : "搜索服务鉴权失败，请检查服务访问权限及内部凭据。";
       throw new SearchProviderError(provider, "unauthorized", message);
     }
+    if (provider === "deepseek" && response.status === 402) throw new SearchProviderError(provider, "upstream_error", "DeepSeek Search 账户余额不足（HTTP 402），请检查账户余额。");
     if (response.status === 429) throw new SearchProviderError(provider, "rate_limited", "搜索服务已达限流或额度限制，请稍后重试或切换 Provider。");
     // Only the authenticated local DDGS endpoint uses structured non-2xx errors.
     if (provider === "ddgs" && !response.ok) {

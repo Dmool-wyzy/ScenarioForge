@@ -43,7 +43,7 @@ class FilePlan(StrictModel):
 
 class ResearchPlan(FilePlan):
     scenarioType: str
-    researchQuestions: list[str] = Field(min_length=3, max_length=6)
+    researchQuestions: list[str] = Field(min_length=1, max_length=6)
     searchQueries: list[str] = Field(min_length=1, max_length=18)
     unknowns: list[str]
 
@@ -62,7 +62,7 @@ class MissingInformation(StrictModel):
 
 class RagResearchPlan(FilePlan):
     scenarioType: str
-    researchQuestions: list[ResearchQuestion] = Field(min_length=3, max_length=6)
+    researchQuestions: list[ResearchQuestion] = Field(min_length=1, max_length=6)
     missingInformation: list[MissingInformation]
     searchQueries: list[str] = Field(min_length=1, max_length=18)
     unknowns: list[str]

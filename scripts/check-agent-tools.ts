@@ -5,6 +5,7 @@ import { Agent, Runner, ToolCallError, Usage, type Model } from "@openai/agents"
 import { ScopedMcpServer } from "../lib/research-mcp";
 import { ApiError, publicError } from "../lib/errors";
 import OpenAI from "openai";
+import { RESEARCH_AGENT_BUDGET } from "../lib/agent-budget";
 
 test("model transport and provider failures expose safe actionable diagnostics", () => {
   assert.match(publicError(new OpenAI.APIConnectionTimeoutError()), /模型服务.*超时.*未自动重试/);
@@ -25,6 +26,7 @@ let fail = false;
 let toolCalls = 0;
 let searchUnavailable = false;
 let generationFailed = false;
+let planningFailed = false;
 const scopes: string[] = [];
 const creationArguments: Record<string, unknown>[] = [];
 const server = http.createServer(async (request, response) => {
@@ -51,6 +53,7 @@ const server = http.createServer(async (request, response) => {
       result = { isError: false, content: [{ type: "text", text: JSON.stringify({ status: "search_unavailable", code: "no_evidence", message: "当前使用 mock 测试搜索，模型未提取到有效证据。请切换真实搜索 Provider。" }) }] };
     }
     if (generationFailed) result = { isError: false, content: [{ type: "text", text: JSON.stringify({ status: "generation_failed", code: "model_timeout", filename: "RESEARCH.md", message: "模型服务等待超过 120 秒，未自动重试；已保存文件保留。" }) }] };
+    if (planningFailed) result = { isError: false, content: [{ type: "text", text: JSON.stringify({ status: "planning_failed", code: "invalid_model_output", message: "模型连续返回不符合格式的内容，已停止；已保存文件保留。" }) }] };
   } else {
     result = {};
   }
@@ -77,6 +80,20 @@ test("research Agent cannot submit its own user answers", async () => {
     await mcp.connect();
     assert.equal((await mcp.listTools()).some(tool => tool.name === "answer_user"), false);
     await assert.rejects(mcp.callToolResult("answer_user", { package_id: "owned-package" }), /不可代替用户/);
+  } finally { await mcp.close(); }
+});
+
+test("research MCP stops before exceeding its tool-call budget", async () => {
+  const { mcp } = fixture();
+  const beforeCalls = toolCalls;
+  try {
+    await mcp.connect();
+    for (let i = 0; i < RESEARCH_AGENT_BUDGET.maxToolCalls; i++) {
+      await mcp.callToolResult("create_research_package", { package_id: "other-package" });
+    }
+    assert.equal(toolCalls - beforeCalls, RESEARCH_AGENT_BUDGET.maxToolCalls);
+    await assert.rejects(mcp.callToolResult("create_research_package", { package_id: "other-package" }), /工具调用已达到上限/);
+    assert.equal(toolCalls - beforeCalls, RESEARCH_AGENT_BUDGET.maxToolCalls);
   } finally { await mcp.close(); }
 });
 
@@ -119,9 +136,10 @@ test("a model-backed tool may take longer than the MCP default 60 seconds", { ti
   } finally { await mcp.close(); }
 });
 
-test("tool errors stop the real Runner after one model call and report the failing step", async () => {
+for (const planningFailure of [false, true]) test(`${planningFailure ? "planning failures" : "tool errors"} stop the real Runner after one model call and report the failing step`, async () => {
   delayMs = 0;
-  fail = true;
+  fail = !planningFailure;
+  planningFailed = planningFailure;
   const { mcp, events } = fixture();
   let modelCalls = 0;
   const previousCalls = toolCalls;
@@ -141,14 +159,16 @@ test("tool errors stop the real Runner after one model call and report the faili
       assert.ok(error instanceof ToolCallError, String(error));
       assert.ok(error.error instanceof ApiError);
       assert.match(publicError(error), /创建研究计划失败/);
+      if (planningFailure) assert.match(publicError(error), /模型连续返回不符合格式的内容.*已停止/);
       assert.equal(publicError(error).includes("private provider"), false);
       return true;
     });
     assert.equal(modelCalls, 1);
     assert.equal(toolCalls - previousCalls, 1);
     assert.deepEqual(events.map((event) => event.type), ["tool_started", "tool_failed"]);
+    if (planningFailure) assert.match(events.at(-1)!.message, /模型连续返回不符合格式的内容/);
     assert.equal(scopes.at(-1), "owned-package");
-  } finally { await mcp.close(); }
+  } finally { planningFailed = false; await mcp.close(); }
 });
 
 test("cancellation interrupts a pending tool instead of marking it completed", async () => {

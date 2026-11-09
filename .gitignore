@@ -1,5 +1,6 @@
 node_modules/
 .next/
+next-env.d.ts
 out/
 .env*
 !.env.example
@@ -19,3 +20,10 @@ __pycache__/
 test-results/
 playwright-report/
 .tmp/
+deploy/private/
+*.pem
+*.key
+.next-before-*/
+.next-failed-*/
+node_modules-before-*/
+node_modules-failed-*/

@@ -3,7 +3,12 @@ import { z } from "zod";
 import { projectModelEnv } from "./model-env";
 
 const databaseSchema = z.object({
-  DATABASE_URL: z.string().startsWith("file:", "DATABASE_URL 必须指向 SQLite 文件"),
+  DATABASE_URL: z.string().refine(value => {
+    try {
+      const url = new URL(value);
+      return url.protocol === "mysql:" && !!url.hostname && url.pathname.length > 1;
+    } catch { return false; }
+  }, "DATABASE_URL 必须是包含主机与数据库名的 MySQL 连接地址"),
 });
 
 const researchSchema = z.object({
@@ -27,4 +32,4 @@ function parseConfig<T extends z.ZodType>(schema: T, values = process.env): z.ou
 }
 
 export function getDatabaseConfig() { return parseConfig(databaseSchema); }
-export function getResearchConfig() { return parseConfig(researchSchema, { ...process.env, ...projectModelEnv() }); }
+export function getResearchConfig(overrides: Record<string, string> = {}) { return parseConfig(researchSchema, { ...process.env, ...projectModelEnv(), ...overrides }); }

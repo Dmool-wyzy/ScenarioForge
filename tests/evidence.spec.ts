@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./fixtures";
 import { PrismaClient } from "@prisma/client";
 
 for (const [goal, content, query] of [
@@ -6,10 +6,10 @@ for (const [goal, content, query] of [
   ["我要做一个基于 YOLO 的安全帽检测项目", "YOLO 安全帽检测采用边界框标注，数据集授权和训练性能待确认。", "YOLO 安全帽检测 边界框"],
   ["我想组织一次校园社团活动", "校园社团活动预算为 3000 元，参与人数 50 人，地点是校内礼堂。", "校园社团活动 预算 人数"],
 ]) {
-  test(`RAG 证据检索、过滤、引用预览与 ZIP：${goal}`, async ({ page, request }) => {
+  test(`RAG 证据检索、过滤、引用预览与 ZIP：${goal}`, async ({ page, request, project }) => {
     test.skip(process.env.AGENT_RAG_TEST !== "true", "使用 npm run check:rag-agent 启动隔离 RAG 环境");
     const db = new PrismaClient();
-    const pkg = await db.researchPackage.create({ data: { goal, title: goal, status: "completed", uploadedFiles: JSON.stringify([{ filename: "reference.txt", extractedText: content }]), files: { create: { filename: "README.md", content: "# 演示工作区" } } } });
+    const pkg = await db.researchPackage.create({ data: { projectId: project.id, goal, title: goal, status: "completed", uploadedFiles: JSON.stringify([{ filename: "reference.txt", extractedText: content }]), files: { create: { filename: "README.md", content: "# 演示工作区" } } } });
     try {
       const rebuild = await request.post(`/api/research/${pkg.id}/knowledge/rebuild`);
       expect(rebuild.ok()).toBeTruthy();
@@ -18,7 +18,7 @@ for (const [goal, content, query] of [
       const evidence = await db.evidenceChunk.findFirstOrThrow({ where: { packageId: pkg.id, content: { contains: content } } });
       const evidenceId = `EVIDENCE-${evidence.evidenceNumber}`;
       await db.workspaceFile.update({ where: { packageId_filename: { packageId: pkg.id, filename: "README.md" } }, data: { content: `# 演示工作区\n\n用户资料 [${evidenceId}]\n\n\`[EVIDENCE-999999]\`\n\n\`\`\`\n[EVIDENCE-999999]\n\`\`\`` } });
-      await page.goto(`/?package=${pkg.id}`);
+      await page.goto(`/?project=${project.id}&package=${pkg.id}`);
       await page.getByRole("button", { name: `[${evidenceId}]`, exact: true }).click();
       const detail = page.getByRole("dialog", { name: "证据详情" });
       await expect(detail.getByText(content, { exact: true })).toBeVisible();
@@ -37,6 +37,6 @@ for (const [goal, content, query] of [
       expect(zip.ok()).toBeTruthy();
       const archive = await (await import("jszip")).default.loadAsync(await zip.body());
       expect(archive.file("evidence-index.json")).not.toBeNull();
-    } finally { await page.goto("about:blank"); await db.researchPackage.delete({ where: { id: pkg.id } }); await db.$disconnect(); }
+    } finally { await page.goto("about:blank"); await db.$disconnect(); }
   });
 }

@@ -21,11 +21,18 @@ def fixture():
 
 class GenerationChecks(unittest.IsolatedAsyncioTestCase):
     async def test_timeout_keeps_saved_file_and_resumes_only_missing_files_in_batches(self):
+        await self.check_failure_recovery("model_timeout")
+
+    async def test_truncation_keeps_saved_file_and_resumes_only_missing_files_in_batches(self):
+        await self.check_failure_recovery("model_output_truncated")
+
+    async def check_failure_recovery(self, error_code):
         context = fixture()
         generated, writes = [], []
         fail_second = True
-        async def model(system, prompt, schema):
+        async def model(system, prompt, schema, *, package_id=None):
             nonlocal fail_second
+            self.assertEqual(package_id, "fixture-package")
             self.assertIs(schema, GeneratedFile)
             data = json.loads(prompt)
             self.assertNotIn("files", data)
@@ -34,7 +41,7 @@ class GenerationChecks(unittest.IsolatedAsyncioTestCase):
             generated.append(filename)
             if filename == "RESEARCH.md" and fail_second:
                 fail_second = False
-                raise ModelFailure("model_timeout", "模型服务等待超时，未自动重试。")
+                raise ModelFailure(error_code, "当前文件未完整返回，已保存文件保留。")
             return GeneratedFile(filename=filename, content=f"# {filename}\nFixture [E001]")
         async def backend(package_id, operation, data=None):
             if operation == "context":
@@ -47,7 +54,7 @@ class GenerationChecks(unittest.IsolatedAsyncioTestCase):
             first = await generate_workspace("fixture-package")
             self.assertEqual(first["status"], "generation_failed")
             self.assertEqual(first["filename"], "RESEARCH.md")
-            self.assertEqual(first["code"], "model_timeout")
+            self.assertEqual(first["code"], error_code)
             self.assertEqual(writes, ["README.md"])
             second = await generate_workspace("fixture-package")
             self.assertEqual(second["status"], "in_progress")
@@ -117,6 +124,26 @@ class GenerationChecks(unittest.IsolatedAsyncioTestCase):
         bounded = file_context(context, context["researchPlan"]["filePlan"][0])
         self.assertLessEqual(len(bounded["evidence"]), 10)
         self.assertLess(len(json.dumps(bounded)), 24000)
+
+    async def test_user_length_request_reaches_each_file_without_a_competing_fixed_length(self):
+        context = fixture()
+        context["goal"] = "生成 README.md 和 RESEARCH.md，正文各不超过 400 字。"
+        context["constraints"] = {"other": "只保留必要结论"}
+        context["files"] = [{"filename": name, "userModified": True, "version": 1, "lockedBy": None} for name in ("SOURCES.md", "PLAN.md", "TODO.md")]
+        async def model(system, prompt, schema, *, package_id=None):
+            data = json.loads(prompt)
+            self.assertEqual(data["goal"], context["goal"])
+            self.assertEqual(data["constraints"], context["constraints"])
+            self.assertIn("字数上限", system)
+            self.assertNotIn("800", system)
+            self.assertNotIn("1500", system)
+            return GeneratedFile(filename=data["filePlan"]["filename"], content="# 简要结论\n\n待确认 [E001]")
+        async def backend(package_id, operation, data=None):
+            return context if operation == "context" else {"status": "created", "filename": data["filename"], "version": 1}
+        with patch("tools.files.backend", backend), patch("tools.files.structured", model):
+            result = await generate_workspace("fixture-package")
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual([row["filename"] for row in result["files"] if row["status"] == "created"], ["README.md", "RESEARCH.md"])
 
 
 if __name__ == "__main__":

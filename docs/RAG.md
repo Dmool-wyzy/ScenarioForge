@@ -2,12 +2,14 @@
 
 RAG 收录目标、上传文本、搜索摘要、公开链接正文、工作区 Markdown 和澄清回答。逐文件生成前检索相关分块，模型接收有界上下文，关键结论使用 `[EVIDENCE-n]` 引用。旧证据卡 `E001` 保留，与分块编号不同。
 
+浏览器用户先登录并加入团队项目，才能访问项目中的研究包和证据。RAG 检索继续按研究包隔离，尚未合并同一团队项目下不同研究包的索引。当前默认 `RAG_ENABLED=false`，真实模型、搜索及 Embedding 需要配置后另行验收。
+
 ```mermaid
 flowchart LR
     S[目标 / 上传 / 网页 / 文档 / 澄清] --> R[来源与不可变版本]
     R --> J[持久化任务与租约]
     J --> C[Markdown 分块与独立 Embedding]
-    C --> DB[(SQLite JSON 向量)]
+    C --> DB[(MySQL 序列化向量)]
     Q[研究问题或文件用途] --> E[查询向量]
     E --> V[项目过滤与余弦 Top-K]
     DB --> V
@@ -47,7 +49,7 @@ EMBEDDING_MODEL=填写服务商支持的Embedding模型
 
 ## 迁移与旧包回填
 
-先备份 `prisma/dev.db`；Windows 如 Prisma 引擎被占用，先停 Next.js。
+先备份当前 MySQL 数据库并停止写入，确认 `DATABASE_URL` 指向目标数据库，再应用已提交的 MySQL 迁移。Windows 如 Prisma 引擎被占用，先停 Next.js。
 
 ```powershell
 npm run db:generate
@@ -59,11 +61,15 @@ npm run rag:backfill -- --apply
 
 回填默认 dry-run；`--apply` 只收录已有资料并建立任务，不调用 Embedding、不重新搜索、不生成文档。重复回填跳过已有来源，保留实时资料版本。配置完成并启动服务后，展开“证据与检索”点击“重建索引”。后台也会处理持久化的待索引任务。
 
-本次增量迁移增加稳定研究问题、来源、不可变来源版本、分块、索引代次、向量、引用、任务及检索日志。原研究包、证据卡、文件、澄清保留。`scripts/check_migration.py` 用数据库副本验证记录数、外键和完整性。
+当前 MySQL schema 包含研究问题、来源、不可变来源版本、分块、索引代次、向量、引用、任务及检索日志，长文本和序列化数据已适配。`rag:backfill` 只处理当前数据库中已经导入的资料，不会自动搬运 SQLite 文件或分配项目归属。
+
+历史 SQLite 增量迁移保存在 `prisma/sqlite-migrations`；`scripts/check_migration.py` 是对应的 SQLite 副本验证脚本，不是当前 MySQL 迁移验证器。导入旧数据前先备份并确认目标项目、成员和研究包归属；未设置 `projectId` 的匿名旧包不会通过网页成员鉴权。
 
 索引按来源版本和分块配置去重，证据编号在项目内递增、不因重建而重用。索引记录提供商、模型、端点指纹、维度和分块版本；不兼容时要求重建。新代次全部完成才切换，失败保留旧索引和原文。检索只读当前来源版本，历史证据仍能回查。
 
 ## API 与 MCP
+
+以下浏览器 API 均要求登录及所在项目的成员权限。MCP 通过内部令牌访问，仍由服务端校验研究包作用域。
 
 | API（相对 `/api/research/<id>`） | 用途 |
 | --- | --- |
@@ -94,6 +100,8 @@ npm run cli -- clarify <packageId>
 
 `clarify` 打印待答问题、选项、原因及默认假设，等待终端输入后调用 `answer_user`，空行跳过。Next.js/MCP 须已启动。阻塞问题按原策略暂停、超时或采用明确的未确认默认假设；回答入库后恢复研究。
 
+CLI／MCP 是持有内部令牌的可信服务入口。本轮未增加 CLI 的团队项目选择流程；独立创建的研究包若没有项目归属，须显式绑定目标项目后才能从网页访问。
+
 ## 引用与恢复
 
 生成按文件串行检索和保存，后续文件失败不回滚已有文件。恢复时保留用户编辑，跳过在最新外部资料/澄清之后已生成的文件。需要修订已有内容时，可使用逐文件读取、检索和版本保存工具。
@@ -115,6 +123,6 @@ npm run typecheck
 npm run build
 ```
 
-`check:rag` 使用临时 SQLite 和假 Embedding，验证东京合租、YOLO 安全帽、社团活动、隔离、去重、版本、引用、租约和重建失败。`check:rag-agent` 使用真实 SDK、HTTP MCP、Next.js、浏览器，模型/Embedding/搜索均为本机夹具，验证两种 API 模式和原功能。完整链路运行前需释放 3000、8001、9009 端口，不使用真实 key。
+`check:rag`、`check:rag-agent`、`check:agent` 要求 `SCENARIOFORGE_TEST_DATABASE_URL` 指向独立 MySQL 测试库，库名以 `scenarioforge_test_` 开头；不要指向应用数据库。`check:rag` 使用确定性假 Embedding，验证东京合租、YOLO 安全帽、社团活动、隔离、去重、版本、引用、租约和重建失败。`check:rag-agent` 使用真实 SDK、HTTP MCP、Next.js、浏览器，模型／Embedding／搜索均为本机夹具，验证两种 API 模式和原功能。完整链路运行前需释放 3000、8001、9009 端口，不使用真实供应商 key。
 
-SQLite 以 JSON 持久化向量，Node.js 每页 200 条做精确余弦扫描，适合本地小规模资料，尚无大规模容量/延迟基准。tokenCount 是 UTF-8 字节估算，不是模型 tokenizer。长表格/代码按行延续并补表头/围栏，极长单行仍可能超过普通块目标。有效编号不代表结论必然成立；语义支持度、来源质量、摘要是否足够、真实服务商 Embedding 可用性仍需真实资料验收。AI 内容和超时假设有性质标记，不能当作独立已验证事实。
+MySQL 以序列化文本持久化向量，Node.js 每页 200 条做精确余弦扫描；本次切换存储未改检索算法，尚无大规模容量／延迟基准。tokenCount 是 UTF-8 字节估算，不是模型 tokenizer。长表格／代码按行延续并补表头／围栏，极长单行仍可能超过普通块目标。有效编号不代表结论必然成立；语义支持度、来源质量、摘要是否足够、真实服务商 Embedding 可用性仍需真实资料验收。AI 内容和超时假设有性质标记，不能当作独立已验证事实。

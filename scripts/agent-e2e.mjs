@@ -11,17 +11,40 @@ import JSZip from "jszip";
 // All provider URLs are local and all subprocesses receive fake API keys.
 const root = process.cwd();
 await mkdir(resolve(root, ".tmp"), { recursive: true });
-const databaseUrl = `file:${resolve(root, ".tmp/agent-e2e.db").replaceAll("\\", "/")}`;
+const databaseUrl = process.env.SCENARIOFORGE_TEST_DATABASE_URL;
+assert.ok(databaseUrl && URL.canParse(databaseUrl), "Set SCENARIOFORGE_TEST_DATABASE_URL to a dedicated MySQL database.");
+const target = new URL(databaseUrl);
+assert.ok(target.protocol === "mysql:" && /^\/scenarioforge_test_[a-z0-9_]{1,45}$/i.test(target.pathname), "The test database name must start with scenarioforge_test_.");
 const fixturePort = process.env.AGENT_E2E_PORT ?? "3000";
 const base = `http://localhost:${fixturePort}`;
 const token = randomUUID() + randomUUID();
-const env = { ...process.env, DATABASE_URL: databaseUrl, SCENARIOFORGE_INTERNAL_TOKEN: token, OPENAI_API_KEY: "fixture-local-key", SEARCH_PROVIDER: "mock", TAVILY_API_KEY: "", OPENAI_BASE_URL: "http://127.0.0.1:9009/v1", SCENARIOFORGE_MCP_URL: "http://127.0.0.1:8001/mcp", SCENARIOFORGE_BACKEND_URL: base, SCENARIOFORGE_MODEL: process.env.SCENARIOFORGE_MODEL ?? "fixture-model", NEXT_TELEMETRY_DISABLED: "1", PYTHONUTF8: "1" };
+const env = { ...process.env, DATABASE_URL: databaseUrl, SCENARIOFORGE_INTERNAL_TOKEN: token, OPENAI_API_KEY: "fixture-local-key", SEARCH_PROVIDER: "mock", TAVILY_API_KEY: "", OPENAI_BASE_URL: "http://127.0.0.1:9009/v1", SCENARIOFORGE_MCP_URL: "http://127.0.0.1:8001/mcp", SCENARIOFORGE_BACKEND_URL: base, SCENARIOFORGE_PUBLIC_ORIGIN: base, SCENARIOFORGE_MODEL: process.env.SCENARIOFORGE_MODEL ?? "fixture-model", NEXT_TELEMETRY_DISABLED: "1", PYTHONUTF8: "1" };
 env.PORT = fixturePort;
 env.SCENARIOFORGE_ENV_FILE = "";
 env.SCENARIOFORGE_TEST_DIST = "true";
 const db = new PrismaClient({ datasourceUrl: databaseUrl });
 const processes = new Set();
-const ids = [];
+const ids = [], projectIds = [], userIds = [];
+let cookie = "", projectId;
+async function authenticatedFetch(url, options = {}) {
+  const headers = new Headers(options.headers);
+  if (cookie) headers.set("Cookie", cookie);
+  if (options.method && options.method !== "GET") headers.set("Origin", base);
+  const response = await fetch(url, { ...options, headers });
+  const session = response.headers.get("set-cookie");
+  if (session) cookie = session.split(";", 1)[0];
+  return response;
+}
+async function createAccountAndProject() {
+  cookie = "";
+  const response = await authenticatedFetch(`${base}/api/auth/register`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: `agent_${randomUUID().replaceAll("-", "").slice(0, 16)}`, password: randomUUID() }) });
+  assert.equal(response.status, 200);
+  userIds.push((await response.json()).user.id);
+  const created = await authenticatedFetch(`${base}/api/projects`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "Agent fixture project" }) });
+  assert.equal(created.status, 201);
+  projectId = (await created.json()).project.id;
+  projectIds.push(projectId);
+}
 const calls = new Map();
 const lastReads = new Map();
 const protocols = new Map();
@@ -44,7 +67,7 @@ function pdfFixture() {
 }
 
 async function uploadFixture(goal) {
-  const form = new FormData(); form.set("goal", goal); form.set("constraints", "{}");
+  const form = new FormData(); form.set("projectId", projectId); form.set("goal", goal); form.set("constraints", "{}");
   form.append("files", new File(["# Markdown fixture\n用户参考资料。"], "reference.md"));
   form.append("files", new File(["TXT fixture " + "x".repeat(21000)], "reference.txt"));
   form.append("files", new File([pdfFixture()], "reference.pdf", { type: "application/pdf" }));
@@ -96,6 +119,7 @@ async function choose(body) {
   const id = serialized.match(/当前研究包 ID：([a-zA-Z0-9_-]+)/)?.[1];
   assert.ok(id, "SDK request must include its package ID");
   const p = await db.researchPackage.findUniqueOrThrow({ where: { id }, include: { files: true, events: true, clarifications: true } });
+  if (body.tools?.some(tool => (tool.function?.name ?? tool.name) === "run_research")) return { name: "run_research", args: { request: p.goal } };
   let call;
   if (p.events.some((event) => event.type === "search_failed")) return { text: "搜索服务暂时不可用，请稍后重试或切换搜索 Provider；本轮不生成来源或文档。" };
   if (!p.researchPlan) {
@@ -161,6 +185,7 @@ const fixture = http.createServer(async (request, response) => {
 });
 
 let next;
+let mcp;
 try {
   // Refuse to collide with an existing user development server.
   const occupied = await fetch(base, { signal: AbortSignal.timeout(1000) }).then(() => true, () => false);
@@ -169,13 +194,14 @@ try {
   assert.equal(await new Promise((done) => migration.child.once("exit", done)), 0, migration.output());
   await new Promise((done) => fixture.listen(9009, "127.0.0.1", done));
   const python = resolve(root, process.platform === "win32" ? "mcp-server/.venv/Scripts/python.exe" : "mcp-server/.venv/bin/python");
-  const mcp = launch(python, ["scripts/fixture_mcp.py"]);
+  mcp = launch(python, ["scripts/fixture_mcp.py"]);
   await until(async () => fetch("http://127.0.0.1:8001/mcp", { signal: AbortSignal.timeout(1500) }).then(() => true, () => false), `MCP fixture did not start: ${mcp.output()}`);
   for (const mode of ["chat_completions", "responses"]) {
-    next = launch(process.execPath, ["node_modules/next/dist/bin/next", "dev"], { OPENAI_API_MODE: mode });
-    await until(async () => fetch(base, { signal: AbortSignal.timeout(1500) }).then((r) => r.ok, () => false), "Next.js did not start");
+    next = launch(process.execPath, ["node_modules/next/dist/bin/next", "dev", "--webpack", "--hostname", "127.0.0.1"], { OPENAI_API_MODE: mode });
+    await until(async () => fetch(base, { signal: AbortSignal.timeout(1500) }).then((r) => r.ok, () => false), "Next.js did not start", 180_000);
+    await createAccountAndProject();
     const goal = `自动验证完整 Agent 流程 ${mode}`;
-    const response = await fetch(`${base}/api/research`, mode === "chat_completions" ? { method: "POST", body: await uploadFixture(goal) } : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ goal, constraints: {}, files: [] }) });
+    const response = await authenticatedFetch(`${base}/api/research`, mode === "chat_completions" ? { method: "POST", body: await uploadFixture(goal) } : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ projectId, goal, constraints: {}, files: [] }) });
     assert.equal(response.status, 202, await response.clone().text());
     const { packageId } = await response.json(); ids.push(packageId);
     await until(async () => {
@@ -205,7 +231,7 @@ try {
     const rewritten = await beginAgain("Rewritten question not in the saved plan");
     assert.equal(rewritten.status, "question_required");
     assert.equal((await db.researchPackage.findUniqueOrThrow({ where: { id: packageId } })).searchCount, 12);
-    const answer = await fetch(`${base}/api/research/${packageId}/answer`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ clarificationId: question.id, answer: "学生" }) });
+    const answer = await authenticatedFetch(`${base}/api/research/${packageId}/answer`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ clarificationId: question.id, answer: "学生" }) });
     assert.equal(answer.status, 200);
     await until(async () => {
       const p = await db.researchPackage.findUniqueOrThrow({ where: { id: packageId } });
@@ -215,7 +241,7 @@ try {
     const planned = JSON.parse((await db.researchPackage.findUniqueOrThrow({ where: { id: packageId } })).researchPlan).filePlan;
     assert.equal(await db.workspaceFile.count({ where: { packageId } }), planned.length);
     const file = await db.workspaceFile.findUniqueOrThrow({ where: { packageId_filename: { packageId, filename: "PLAN.md" } } });
-    const update = await fetch(`${base}/api/research/${packageId}/files/PLAN.md`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ baseVersion: file.version, content: "# 用户最新计划\n\n用户修改必须保留。", changeNote: "验证上下文更新" }) });
+    const update = await authenticatedFetch(`${base}/api/research/${packageId}/files/PLAN.md`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ baseVersion: file.version, content: "# 用户最新计划\n\n用户修改必须保留。", changeNote: "验证上下文更新" }) });
     assert.equal(update.status, 200);
     await until(async () => {
       const p = await db.researchPackage.findUniqueOrThrow({ where: { id: packageId } });
@@ -235,7 +261,7 @@ try {
     if (ragTest) {
       assert.ok(await db.citation.count({ where: { packageId } }));
       assert.ok(await db.retrievalLog.count({ where: { packageId } }) >= planned.length);
-      const knowledge = await (await fetch(`${base}/api/research/${packageId}/knowledge`)).json();
+      const knowledge = await (await authenticatedFetch(`${base}/api/research/${packageId}/knowledge`)).json();
       assert.equal(knowledge.enabled, true); assert.ok(knowledge.vectorCount > 0);
       if (mode === "chat_completions") {
         const browser = launch(process.execPath, ["node_modules/@playwright/test/cli.js", "test"], { PLAYWRIGHT_CHANNEL: process.env.PLAYWRIGHT_CHANNEL ?? "msedge" });
@@ -246,9 +272,9 @@ try {
     console.log(`PASS: ${mode} SDK → indexed research despite rewritten questions → reuse at budget limit → pause/answer/resume → planned files → user edit → re-read, same session`);
     await stop(next.child); next = undefined;
   }
-  next = launch(process.execPath, ["node_modules/next/dist/bin/next", "dev"], { OPENAI_API_MODE: "chat_completions", SEARCH_PROVIDER: "searxng", SEARXNG_URL: "http://127.0.0.1:9009" });
-  await until(async () => fetch(base, { signal: AbortSignal.timeout(1500) }).then((r) => r.ok, () => false), "Next.js did not start for search failure check");
-  const failedResponse = await fetch(`${base}/api/research`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ goal: "验证搜索失败后禁止伪造来源与生成文档", constraints: {}, files: [] }) });
+  next = launch(process.execPath, ["node_modules/next/dist/bin/next", "dev", "--webpack", "--hostname", "127.0.0.1"], { OPENAI_API_MODE: "chat_completions", SEARCH_PROVIDER: "searxng", SEARXNG_URL: "http://127.0.0.1:9009" });
+  await until(async () => fetch(base, { signal: AbortSignal.timeout(1500) }).then((r) => r.ok, () => false), "Next.js did not start for search failure check", 180_000);
+  const failedResponse = await authenticatedFetch(`${base}/api/research`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ projectId, goal: "验证搜索失败后禁止伪造来源与生成文档", constraints: {}, files: [] }) });
   assert.equal(failedResponse.status, 202);
   const { packageId: failedId } = await failedResponse.json(); ids.push(failedId);
   await until(async () => {
@@ -266,10 +292,18 @@ try {
   console.log("PASS: SearXNG upstream failure → search_failed SSE event → no fabricated evidence or documents, write guard remains active");
 } catch (error) {
   if (next) console.error(next.output());
+  if (mcp) console.error(`MCP fixture output:\n${mcp.output()}`);
   throw error;
 } finally {
   for (const child of processes) await stop(child);
   await new Promise((done) => fixture.close(done));
-  if (ids.length) await db.researchPackage.deleteMany({ where: { id: { in: ids } } });
-  await db.$disconnect();
+  try {
+    if (ids.length) {
+      await db.knowledgeJob.deleteMany({ where: { packageId: { in: ids } } });
+      await db.evidence.deleteMany({ where: { packageId: { in: ids } } });
+      await db.researchPackage.deleteMany({ where: { id: { in: ids } } });
+    }
+    if (projectIds.length) await db.project.deleteMany({ where: { id: { in: projectIds } } });
+    if (userIds.length) await db.user.deleteMany({ where: { id: { in: userIds } } });
+  } finally { await db.$disconnect(); }
 }

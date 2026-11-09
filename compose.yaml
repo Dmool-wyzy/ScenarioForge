@@ -1,0 +1,17 @@
+name: scenarioforge
+
+services:
+  proxy:
+    image: ghcr.nju.edu.cn/world9566/world.blog:nginx-1.28.2-alpine
+    pull_policy: never
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./deploy/private/letsencrypt:/etc/letsencrypt:ro
+      - ./deploy/private/acme:/var/www/acme:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

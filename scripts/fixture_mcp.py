@@ -13,7 +13,7 @@ from schemas import ResearchPlan, RagResearchPlan, SearchQueries, EvidenceResult
 REAL_CLIENT = httpx.AsyncClient
 
 
-async def fixture_model(system, context, schema):
+async def fixture_model(system, context, schema, package_id=None):
     if schema in (ResearchPlan, RagResearchPlan):
         names = ["README.md", "RESEARCH.md", "SOURCES.md", "DECISIONS.md", "PLAN.md"]
         questions = ["测试问题一", "测试问题二", "测试问题三"]

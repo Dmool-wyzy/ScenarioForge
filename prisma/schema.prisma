@@ -3,67 +3,101 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "mysql"
   url      = env("DATABASE_URL")
 }
 
 model ResearchPackage {
-  id             String   @id @default(cuid())
-  title          String
-  goal           String
-  status         String   @default("created")
-  scenarioType   String?
-  constraints    String?
-  currentStage   Int      @default(0)
-  uploadedFiles  String   @default("[]")
-  researchPlan   String?
-  sessionId      String   @unique @default(cuid())
-  sessionState   String   @default("[]")
-  summary        String?
-  taskState      String   @default("idle")
-  pendingMessage String?
-  leaseOwner     String?
-  leaseUntil     DateTime?
-  eventSequence  Int      @default(0)
-  searchCount    Int      @default(0)
-  questionCount  Int      @default(0)
-  contextVersion Int      @default(0)
-  activeIndexId  String?
-  nextEvidenceNumber Int  @default(0)
-  planVersion    Int      @default(1)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  modelConfigEncrypted String?   @db.LongText
+  projectId            String?   @db.VarChar(100)
+  project              Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  id                   String    @id @default(cuid()) @db.VarChar(100)
+  title                String
+  goal                 String    @db.LongText
+  status               String    @default("created")
+  scenarioType         String?
+  constraints          String?   @db.LongText
+  currentStage         Int       @default(0)
+  uploadedFiles        String    @default(dbgenerated("('[]')")) @db.LongText
+  researchPlan         String?   @db.LongText
+  sessionId            String    @unique @default(cuid()) @db.VarChar(100)
+  sessionState         String    @default(dbgenerated("('[]')")) @db.LongText
+  summary              String?   @db.LongText
+  taskState            String    @default("idle")
+  pendingMessage       String?   @db.LongText
+  leaseOwner           String?   @db.VarChar(100)
+  leaseUntil           DateTime?
+  eventSequence        Int       @default(0)
+  searchCount          Int       @default(0)
+  questionCount        Int       @default(0)
+  agentTaskCount       Int       @default(0)
+  contextVersion       Int       @default(0)
+  activeIndexId        String?   @db.VarChar(100)
+  nextEvidenceNumber   Int       @default(0)
+  planVersion          Int       @default(1)
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
 
-  files          WorkspaceFile[]
-  events         ResearchEvent[]
-  clarifications Clarification[]
-  evidence       Evidence[]
+  files             WorkspaceFile[]
+  events            ResearchEvent[]
+  clarifications    Clarification[]
+  evidence          Evidence[]
   researchQuestions ResearchQuestion[]
-  sources        Source[]
-  sourceRevisions SourceRevision[]
-  chunks         EvidenceChunk[]
-  embeddingIndexes EmbeddingIndex[]
-  embeddings     ChunkEmbedding[]
-  citations      Citation[]
-  knowledgeJobs  KnowledgeJob[]
-  retrievalLogs  RetrievalLog[]
+  sources           Source[]
+  sourceRevisions   SourceRevision[]
+  chunks            EvidenceChunk[]
+  embeddingIndexes  EmbeddingIndex[]
+  embeddings        ChunkEmbedding[]
+  citations         Citation[]
+  knowledgeJobs     KnowledgeJob[]
+  retrievalLogs     RetrievalLog[]
+  agentSubtasks     AgentSubtask[]
+
+  @@index([projectId])
+}
+
+model AgentSubtask {
+  id            String          @id @default(cuid()) @db.VarChar(100)
+  packageId     String          @db.VarChar(100)
+  runId         String          @db.VarChar(100)
+  ordinal       Int
+  objective     String          @db.LongText
+  context       String          @db.LongText
+  assigneeId    String?         @db.VarChar(100)
+  assigneeName  String?         @db.VarChar(64)
+  status        String          @default("running") @db.VarChar(16)
+  result        String?         @db.LongText
+  conversation  String          @default("[]") @db.LongText
+  revision      Int             @default(0)
+  chatLeaseUntil DateTime?
+  error         String?         @db.VarChar(500)
+  modelRequests Int             @default(0)
+  inputTokens   Int             @default(0)
+  outputTokens  Int             @default(0)
+  createdAt     DateTime        @default(now())
+  finishedAt    DateTime?
+  package       ResearchPackage @relation(fields: [packageId], references: [id], onDelete: Cascade)
+
+  @@unique([runId, ordinal], map: "AgentSubtask_run_ordinal_key")
+  @@index([packageId, createdAt], map: "AgentSubtask_package_created_idx")
+  @@index([assigneeId, createdAt], map: "AgentSubtask_assignee_created_idx")
 }
 
 model WorkspaceFile {
-  id          String   @id @default(cuid())
-  packageId   String
-  filename    String
-  content     String
-  version     Int      @default(1)
-  updatedBy   String   @default("agent")
-  changeNote  String?
-  lockedBy    String?
-  lockToken   String?
-  lockExpiresAt DateTime?
-  userContent String?
+  id                 String    @id @default(cuid()) @db.VarChar(100)
+  packageId          String    @db.VarChar(100)
+  filename           String
+  content            String    @db.LongText
+  version            Int       @default(1)
+  updatedBy          String    @default("agent")
+  changeNote         String?   @db.LongText
+  lockedBy           String?
+  lockToken          String?
+  lockExpiresAt      DateTime?
+  userContent        String?   @db.LongText
   contextVersionUsed Int?
-  updatedAt   DateTime @updatedAt
-  createdAt   DateTime @default(now())
+  updatedAt          DateTime  @updatedAt
+  createdAt          DateTime  @default(now())
 
   package ResearchPackage @relation(fields: [packageId], references: [id], onDelete: Cascade)
 
@@ -71,36 +105,36 @@ model WorkspaceFile {
 }
 
 model Evidence {
-  id         String   @id @default(cuid())
-  packageId  String
+  id         String   @id @default(cuid()) @db.VarChar(100)
+  packageId  String   @db.VarChar(100)
   code       String
-  question   String
-  questionId String?
-  claim      String
-  sources    String
+  question   String   @db.LongText
+  questionId String?  @db.VarChar(100)
+  claim      String   @db.LongText
+  sources    String   @db.LongText
   confidence String
-  impact     String?
+  impact     String?  @db.LongText
   status     String   @default("verified")
   createdAt  DateTime @default(now())
 
-  package ResearchPackage @relation(fields: [packageId], references: [id], onDelete: Cascade)
+  package          ResearchPackage   @relation(fields: [packageId], references: [id], onDelete: Cascade)
   researchQuestion ResearchQuestion? @relation(fields: [questionId, packageId], references: [id, packageId], onDelete: NoAction, onUpdate: NoAction)
 
   @@unique([packageId, code])
 }
 
 model Clarification {
-  id                String    @id @default(cuid())
-  packageId         String
-  groupId           String
-  question          String
-  questionId        String
+  id                String    @id @default(cuid()) @db.VarChar(100)
+  packageId         String    @db.VarChar(100)
+  groupId           String    @db.VarChar(100)
+  question          String    @db.LongText
+  questionId        String    @db.VarChar(100)
   type              String    @default("text")
-  options           String?
+  options           String?   @db.LongText
   priority          String    @default("optional")
-  whyNeeded         String
-  defaultAssumption String?
-  answer            String?
+  whyNeeded         String    @db.LongText
+  defaultAssumption String?   @db.LongText
+  answer            String?   @db.LongText
   answeredBy        String?
   status            String    @default("waiting")
   createdAt         DateTime  @default(now())
@@ -113,12 +147,12 @@ model Clarification {
 }
 
 model ResearchEvent {
-  id        String   @id @default(cuid())
-  packageId String
+  id        String   @id @default(cuid()) @db.VarChar(100)
+  packageId String   @db.VarChar(100)
   sequence  Int
   type      String
-  message   String
-  payload   String?
+  message   String   @db.LongText
+  payload   String?  @db.LongText
   createdAt DateTime @default(now())
 
   package ResearchPackage @relation(fields: [packageId], references: [id], onDelete: Cascade)
@@ -127,158 +161,314 @@ model ResearchEvent {
 }
 
 model ResearchQuestion {
-  id String @id @default(cuid())
-  packageId String
-  ordinal Int
-  question String
-  searchQueries String @default("[]")
-  priority String @default("high")
-  status String @default("pending")
-  attemptCount Int @default(0)
-  lastError String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  package ResearchPackage @relation(fields: [packageId], references: [id], onDelete: Cascade)
-  evidence Evidence[]
+  id            String          @id @default(cuid()) @db.VarChar(100)
+  packageId     String          @db.VarChar(100)
+  ordinal       Int
+  question      String          @db.LongText
+  searchQueries String          @default(dbgenerated("('[]')")) @db.LongText
+  priority      String          @default("high")
+  status        String          @default("pending")
+  attemptCount  Int             @default(0)
+  lastError     String?         @db.LongText
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+  package       ResearchPackage @relation(fields: [packageId], references: [id], onDelete: Cascade)
+  evidence      Evidence[]
+
   @@unique([id, packageId])
   @@unique([packageId, ordinal])
 }
 
 model Source {
-  id String @id @default(cuid())
-  packageId String
-  sourceType String
-  sourceKey String
-  title String
-  url String?
-  metadata String @default("{}")
-  currentRevisionId String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  package ResearchPackage @relation(fields: [packageId], references: [id], onDelete: Cascade)
-  revisions SourceRevision[]
+  id                String           @id @default(cuid()) @db.VarChar(100)
+  packageId         String           @db.VarChar(100)
+  sourceType        String
+  sourceKey         String           @db.VarChar(500)
+  title             String           @db.LongText
+  url               String?          @db.LongText
+  metadata          String           @default(dbgenerated("('{}')")) @db.LongText
+  currentRevisionId String?          @db.VarChar(100)
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+  package           ResearchPackage  @relation(fields: [packageId], references: [id], onDelete: Cascade)
+  revisions         SourceRevision[]
+
   @@unique([id, packageId])
   @@unique([packageId, sourceKey])
   @@index([packageId, sourceType])
 }
 
 model SourceRevision {
-  id String @id @default(cuid())
-  packageId String
-  sourceId String
-  revision Int
-  rawContent String
-  contentHash String
-  fetchedAt DateTime @default(now())
-  metadata String @default("{}")
-  package ResearchPackage @relation(fields: [packageId], references: [id], onDelete: Cascade)
-  source Source @relation(fields: [sourceId, packageId], references: [id, packageId], onDelete: Cascade)
-  chunks EvidenceChunk[]
-  jobs KnowledgeJob[]
+  id          String          @id @default(cuid()) @db.VarChar(100)
+  packageId   String          @db.VarChar(100)
+  sourceId    String          @db.VarChar(100)
+  revision    Int
+  rawContent  String          @db.LongText
+  contentHash String          @db.Char(64)
+  fetchedAt   DateTime        @default(now())
+  metadata    String          @default(dbgenerated("('{}')")) @db.LongText
+  package     ResearchPackage @relation(fields: [packageId], references: [id], onDelete: Cascade)
+  source      Source          @relation(fields: [sourceId, packageId], references: [id, packageId], onDelete: Cascade)
+  chunks      EvidenceChunk[]
+  jobs        KnowledgeJob[]
+
   @@unique([id, packageId])
   @@unique([sourceId, contentHash])
   @@unique([sourceId, revision])
 }
 
 model EvidenceChunk {
-  id String @id @default(cuid())
-  packageId String
-  sourceRevisionId String
-  chunkIndex Int
-  chunkerVersion String
-  evidenceNumber Int
-  content String
-  tokenCount Int
-  metadata String @default("{}")
-  createdAt DateTime @default(now())
-  package ResearchPackage @relation(fields: [packageId], references: [id], onDelete: Cascade)
-  revision SourceRevision @relation(fields: [sourceRevisionId, packageId], references: [id, packageId], onDelete: Cascade)
-  embeddings ChunkEmbedding[]
-  citations Citation[]
+  id               String           @id @default(cuid()) @db.VarChar(100)
+  packageId        String           @db.VarChar(100)
+  sourceRevisionId String           @db.VarChar(100)
+  chunkIndex       Int
+  chunkerVersion   String
+  evidenceNumber   Int
+  content          String           @db.LongText
+  tokenCount       Int
+  metadata         String           @default(dbgenerated("('{}')")) @db.LongText
+  createdAt        DateTime         @default(now())
+  package          ResearchPackage  @relation(fields: [packageId], references: [id], onDelete: Cascade)
+  revision         SourceRevision   @relation(fields: [sourceRevisionId, packageId], references: [id, packageId], onDelete: Cascade)
+  embeddings       ChunkEmbedding[]
+  citations        Citation[]
+
   @@unique([id, packageId])
   @@unique([packageId, evidenceNumber])
   @@unique([sourceRevisionId, chunkerVersion, chunkIndex])
 }
 
 model EmbeddingIndex {
-  id String @id @default(cuid())
-  packageId String
-  generation Int
-  provider String
-  model String
+  id                 String           @id @default(cuid()) @db.VarChar(100)
+  packageId          String           @db.VarChar(100)
+  generation         Int
+  provider           String
+  model              String
   baseUrlFingerprint String
-  dimensions Int?
-  chunkerVersion String
-  status String @default("building")
-  errorCode String?
-  createdAt DateTime @default(now())
-  activatedAt DateTime?
-  package ResearchPackage @relation(fields: [packageId], references: [id], onDelete: Cascade)
-  embeddings ChunkEmbedding[]
-  jobs KnowledgeJob[]
+  dimensions         Int?
+  chunkerVersion     String
+  status             String           @default("building")
+  errorCode          String?
+  createdAt          DateTime         @default(now())
+  activatedAt        DateTime?
+  package            ResearchPackage  @relation(fields: [packageId], references: [id], onDelete: Cascade)
+  embeddings         ChunkEmbedding[]
+  jobs               KnowledgeJob[]
+
   @@unique([id, packageId])
   @@unique([packageId, generation])
 }
 
 model ChunkEmbedding {
-  id String @id @default(cuid())
-  packageId String
-  indexId String
-  chunkId String
-  vector String
+  id         String          @id @default(cuid()) @db.VarChar(100)
+  packageId  String          @db.VarChar(100)
+  indexId    String          @db.VarChar(100)
+  chunkId    String          @db.VarChar(100)
+  vector     String          @db.LongText
   vectorNorm Float
-  package ResearchPackage @relation(fields: [packageId], references: [id], onDelete: Cascade)
-  index EmbeddingIndex @relation(fields: [indexId, packageId], references: [id, packageId], onDelete: Cascade)
-  chunk EvidenceChunk @relation(fields: [chunkId, packageId], references: [id, packageId], onDelete: Cascade)
+  package    ResearchPackage @relation(fields: [packageId], references: [id], onDelete: Cascade)
+  index      EmbeddingIndex  @relation(fields: [indexId, packageId], references: [id, packageId], onDelete: Cascade)
+  chunk      EvidenceChunk   @relation(fields: [chunkId, packageId], references: [id, packageId], onDelete: Cascade)
+
   @@unique([indexId, chunkId])
   @@index([packageId, indexId, id])
 }
 
 model Citation {
-  id String @id @default(cuid())
-  packageId String
-  chunkId String
-  documentName String
-  fileVersion Int
-  section String @default("")
-  createdAt DateTime @default(now())
-  package ResearchPackage @relation(fields: [packageId], references: [id], onDelete: Cascade)
-  chunk EvidenceChunk @relation(fields: [chunkId, packageId], references: [id, packageId], onDelete: Cascade)
+  id           String          @id @default(cuid()) @db.VarChar(100)
+  packageId    String          @db.VarChar(100)
+  chunkId      String          @db.VarChar(100)
+  documentName String          @db.VarChar(100)
+  fileVersion  Int
+  section      String          @default("") @db.VarChar(300)
+  createdAt    DateTime        @default(now())
+  package      ResearchPackage @relation(fields: [packageId], references: [id], onDelete: Cascade)
+  chunk        EvidenceChunk   @relation(fields: [chunkId, packageId], references: [id, packageId], onDelete: Cascade)
+
   @@unique([packageId, documentName, fileVersion, section, chunkId])
 }
 
 model KnowledgeJob {
-  id String @id @default(cuid())
-  packageId String
-  sourceRevisionId String
-  indexId String?
-  jobKey String @unique
-  status String @default("pending")
-  attempts Int @default(0)
-  nextAttemptAt DateTime @default(now())
-  leaseOwner String?
-  leaseUntil DateTime?
-  errorCode String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  package ResearchPackage @relation(fields: [packageId], references: [id], onDelete: Cascade)
-  revision SourceRevision @relation(fields: [sourceRevisionId, packageId], references: [id, packageId], onDelete: Cascade)
-  index EmbeddingIndex? @relation(fields: [indexId, packageId], references: [id, packageId], onDelete: NoAction, onUpdate: NoAction)
+  id               String          @id @default(cuid()) @db.VarChar(100)
+  packageId        String          @db.VarChar(100)
+  sourceRevisionId String          @db.VarChar(100)
+  indexId          String?         @db.VarChar(100)
+  jobKey           String          @unique @db.VarChar(255)
+  status           String          @default("pending")
+  attempts         Int             @default(0)
+  nextAttemptAt    DateTime        @default(now())
+  leaseOwner       String?         @db.VarChar(100)
+  leaseUntil       DateTime?
+  errorCode        String?
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+  package          ResearchPackage @relation(fields: [packageId], references: [id], onDelete: Cascade)
+  revision         SourceRevision  @relation(fields: [sourceRevisionId, packageId], references: [id, packageId], onDelete: Cascade)
+  index            EmbeddingIndex? @relation(fields: [indexId, packageId], references: [id, packageId], onDelete: NoAction, onUpdate: NoAction)
+
   @@index([packageId, status, nextAttemptAt])
 }
 
 model RetrievalLog {
-  id String @id @default(cuid())
-  packageId String
-  query String
-  topK Int
-  sourceTypes String
-  indexId String?
-  resultEvidenceIds String
-  scores String
-  durationMs Int
-  status String
-  createdAt DateTime @default(now())
-  package ResearchPackage @relation(fields: [packageId], references: [id], onDelete: Cascade)
+  id                String          @id @default(cuid()) @db.VarChar(100)
+  packageId         String          @db.VarChar(100)
+  query             String          @db.LongText
+  topK              Int
+  sourceTypes       String          @db.LongText
+  indexId           String?         @db.VarChar(100)
+  resultEvidenceIds String          @db.LongText
+  scores            String          @db.LongText
+  durationMs        Int
+  status            String
+  createdAt         DateTime        @default(now())
+  package           ResearchPackage @relation(fields: [packageId], references: [id], onDelete: Cascade)
+
   @@index([packageId, createdAt])
+}
+
+model User {
+  contributions ContributionRecord[]
+  profile      UserProfile?
+  favorites    PersonalFavorite[]
+  id           String          @id @default(cuid()) @db.VarChar(100)
+  username     String          @unique @db.VarChar(64)
+  passwordHash String          @db.VarChar(255)
+  createdAt    DateTime        @default(now())
+  sessions     AuthSession[]
+  memberships  ProjectMember[]
+}
+
+model AuthSession {
+  id        String   @unique @default(dbgenerated("(uuid())")) @db.VarChar(100)
+  device    String   @default("历史登录设备") @db.VarChar(100)
+  tokenHash String   @id @db.Char(64)
+  userId    String   @db.VarChar(100)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model UserProfile {
+  userId         String @id @db.VarChar(100)
+  nickname       String @default("") @db.VarChar(40)
+  avatar         String @default("leaf") @db.MediumText
+  bio            String @db.VarChar(500) @default("")
+  specialty      String @db.VarChar(100) @default("")
+  skills         String @db.VarChar(1000) @default("[]")
+  agentStyle     String @db.VarChar(20) @default("balanced")
+  agentTech      String @db.VarChar(500) @default("")
+  agentDelivery  String @db.VarChar(500) @default("")
+  agentNotes     String @db.VarChar(1000) @default("")
+  user           User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model PersonalFavorite {
+  id        String @id @default(cuid()) @db.VarChar(100)
+  userId    String @db.VarChar(100)
+  kind      String @db.VarChar(20)
+  targetId  String @db.VarChar(240)
+  tags      String @db.VarChar(1000) @default("[]")
+  note      String @db.VarChar(1000) @default("")
+  createdAt DateTime @default(now())
+  user      User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@unique([userId, kind, targetId])
+  @@index([userId, createdAt])
+}
+
+model Project {
+  contributions        ContributionRecord[]
+  repositoryEnabled    Boolean                @default(false)
+  modelConfigEncrypted String?                @db.LongText
+  id                   String                 @id @default(cuid()) @db.VarChar(100)
+  name                 String                 @db.VarChar(100)
+  inviteCode           String                 @unique @db.Char(6)
+  createdAt            DateTime               @default(now())
+  updatedAt            DateTime               @updatedAt
+  members              ProjectMember[]
+  researchPackages     ResearchPackage[]
+  knowledgeItems       ProjectKnowledgeItem[]
+}
+
+model ProjectMember {
+  personalPriority PersonalProjectPriority?
+  actionSettings   PersonalActionSetting[]
+  personalAgentConfigEncrypted String?  @db.LongText
+  acceptsAgentTasks            Boolean  @default(false)
+  projectId String   @db.VarChar(100)
+  userId    String   @db.VarChar(100)
+  role      String   @default("member") @db.VarChar(16)
+  createdAt DateTime @default(now())
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([projectId, userId])
+  @@index([userId])
+}
+
+model PersonalProjectPriority {
+  projectId String @db.VarChar(100)
+  userId String @db.VarChar(100)
+  stars Int @default(3)
+  sortOrder Int @default(0)
+  member ProjectMember @relation(fields: [projectId, userId], references: [projectId, userId], onDelete: Cascade)
+  @@id([projectId, userId])
+  @@index([userId])
+}
+
+model PersonalActionSetting {
+  projectId String @db.VarChar(100)
+  userId String @db.VarChar(100)
+  actionKey String @db.VarChar(140)
+  dueAt DateTime?
+  member ProjectMember @relation(fields: [projectId, userId], references: [projectId, userId], onDelete: Cascade)
+  @@id([projectId, userId, actionKey])
+  @@index([userId])
+}
+
+model ProjectKnowledgeItem {
+  id                 String    @id @default(cuid()) @db.VarChar(100)
+  projectId          String    @db.VarChar(100)
+  title              String    @db.VarChar(200)
+  question           String    @db.LongText
+  claim              String    @db.LongText
+  sources            String    @db.LongText
+  confidence         String    @db.VarChar(16)
+  status             String    @db.VarChar(16)
+  originPackageId    String    @db.VarChar(100)
+  originPackageTitle String    @db.VarChar(200)
+  originEvidenceId   String    @db.VarChar(100)
+  originEvidenceCode String    @db.VarChar(32)
+  createdBy          String    @db.VarChar(100)
+  createdAt          DateTime  @default(now())
+  archivedAt         DateTime?
+  project            Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, originPackageId, originEvidenceId], map: "ProjectKnowledgeItem_project_origin_evidence_key")
+  @@index([projectId, archivedAt, createdAt])
+}
+
+model ContributionRecord {
+  id           String @id @default(cuid()) @db.VarChar(100)
+  userId       String @db.VarChar(100)
+  projectId    String? @db.VarChar(100)
+  packageId    String @db.VarChar(100)
+  sourceKey    String @db.VarChar(180)
+  kind         String @db.VarChar(20)
+  title        String @db.VarChar(240)
+  points       Int
+  confirmedBy  String @db.VarChar(100)
+  note         String @db.VarChar(600)
+  revokedAt    DateTime?
+  revokeReason String @default("") @db.VarChar(600)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  user         User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project      Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+
+  @@unique([userId, sourceKey])
+  @@index([userId, revokedAt, createdAt])
+  @@index([projectId, sourceKey])
+  @@index([projectId, packageId, revokedAt])
 }

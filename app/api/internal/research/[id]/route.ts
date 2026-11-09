@@ -1,3 +1,4 @@
+import { packageResearchConfig } from "@/lib/model-settings";
 import { timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import { db } from "@/lib/db";
@@ -31,6 +32,10 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       return Response.json(pkg);
     }
     await getResearch(id);
+    if (body.operation === "model_config") {
+      const config = await packageResearchConfig(id);
+      return Response.json({ OPENAI_API_KEY: config.OPENAI_API_KEY, OPENAI_BASE_URL: config.OPENAI_BASE_URL, OPENAI_API_MODE: config.OPENAI_API_MODE, SCENARIOFORGE_MODEL: config.SCENARIOFORGE_MODEL, MODEL_TIMEOUT_SECONDS: config.MODEL_TIMEOUT_SECONDS, PROJECT_MODEL_CONFIG: config.PROJECT_MODEL_CONFIG ?? false, MODEL_VALIDATED_ADDRESS: config.MODEL_VALIDATED_ADDRESS, AGENT_RUN_ID: config.AGENT_RUN_ID }, { headers: { "Cache-Control": "no-store" } });
+    }
     switch (body.operation) {
       case "context": return Response.json({ ...await getContext(id), ragEnabled: ragEnabled() });
       case "rag_status": return Response.json(await knowledgeStatus(id));

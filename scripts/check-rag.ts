@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, rmSync } from "node:fs";
-import { resolve } from "node:path";
 import http from "node:http";
 
-// Isolated SQLite and deterministic vectors. No real keys, search or model calls.
-mkdirSync(".tmp", { recursive: true });
-const database = resolve(`.tmp/rag-${Date.now()}.db`);
-process.env.DATABASE_URL = `file:${database.replaceAll("\\", "/")}`;
+// Dedicated MySQL database and deterministic vectors; never reset an application database.
+const databaseUrl = process.env.SCENARIOFORGE_TEST_DATABASE_URL;
+assert.ok(databaseUrl && URL.canParse(databaseUrl), "Set SCENARIOFORGE_TEST_DATABASE_URL to a dedicated MySQL database.");
+const target = new URL(databaseUrl);
+assert.ok(target.protocol === "mysql:" && /^\/scenarioforge_test_[a-z0-9_]{1,45}$/i.test(target.pathname), "The test database name must start with scenarioforge_test_.");
+process.env.DATABASE_URL = databaseUrl;
 process.env.RAG_ENABLED = "true";
 process.env.EMBEDDING_PROVIDER = "mock";
 process.env.SEARCH_PROVIDER = "mock";
@@ -29,6 +29,7 @@ test("RAG: chunking, embeddings, isolation, versions, recovery and citations", a
   const { extractCitations } = await import("../lib/rag/citations");
   const { isPublicIPv4 } = await import("../lib/rag/fetch-source");
   const { exportWorkspace } = await import("../lib/markdown");
+  const packageIds: string[] = [];
   try {
     const code = '```python\nprint("安全帽")\n```';
     const table = "| 类别 | 标注 |\n| --- | --- |\n| 安全帽 | 框 |";
@@ -52,6 +53,7 @@ test("RAG: chunking, embeddings, isolation, versions, recovery and citations", a
     for (const fixture of fixtures) {
       const pkg = await createResearch({ goal: fixture.goal, files: [{ filename: "reference.txt", extractedText: fixture.text }] });
       packages.push(pkg);
+      packageIds.push(pkg.id);
       await processPackageIndex(pkg.id);
       const hits = await searchEvidence(pkg.id, { query: fixture.query, sourceTypes: ["upload"] });
       assert.equal(hits.status, "ok");
@@ -118,5 +120,11 @@ test("RAG: chunking, embeddings, isolation, versions, recovery and citations", a
       assert.equal((await db.researchPackage.findUniqueOrThrow({ where: { id: packageId } })).activeIndexId, active);
       assert.ok(await db.knowledgeJob.count({ where: { packageId, status: "failed" } }));
     } finally { await new Promise<void>(done => server.close(() => done())); }
-  } finally { await db.$disconnect(); for (const suffix of ["", "-wal", "-shm", "-journal"]) rmSync(database + suffix, { force: true }); }
+  } finally {
+    try {
+      await db.knowledgeJob.deleteMany({ where: { packageId: { in: packageIds } } });
+      await db.evidence.deleteMany({ where: { packageId: { in: packageIds } } });
+      await db.researchPackage.deleteMany({ where: { id: { in: packageIds } } });
+    } finally { await db.$disconnect(); }
+  }
 });

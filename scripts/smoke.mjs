@@ -5,7 +5,16 @@ import { randomUUID } from "node:crypto";
 
 const base = process.env.SCENARIOFORGE_BACKEND_URL ?? "http://localhost:3000";
 const db = new PrismaClient();
-let id;
+let id, projectId, userId, cookie = "";
+async function authenticatedFetch(url, options = {}) {
+  const headers = new Headers(options.headers);
+  if (cookie) headers.set("Cookie", cookie);
+  if (options.method && options.method !== "GET") headers.set("Origin", new URL(base).origin);
+  const response = await fetch(url, { ...options, headers });
+  const session = response.headers.get("set-cookie");
+  if (session) cookie = session.split(";", 1)[0];
+  return response;
+}
 
 async function internal(operation, data, packageId = id) {
   const response = await fetch(`${base}/api/internal/research/${packageId}`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${process.env.SCENARIOFORGE_INTERNAL_TOKEN}` }, body: JSON.stringify({ operation, data }) });
@@ -18,7 +27,7 @@ async function readEvent(after, expected) {
   const abort = new AbortController();
   const timer = setTimeout(() => abort.abort(), 8000);
   try {
-    const response = await fetch(`${base}/api/research/${id}/stream?after=${after}`, { signal: abort.signal });
+    const response = await authenticatedFetch(`${base}/api/research/${id}/stream?after=${after}`, { signal: abort.signal });
     assert.equal(response.headers.get("content-type"), "text/event-stream; charset=utf-8");
     const reader = response.body.getReader();
     let text = "";
@@ -34,14 +43,20 @@ async function readEvent(after, expected) {
 try {
   const unauthenticated = await fetch(`${base}/api/internal/research/new`, { method: "POST", body: "{}" });
   assert.equal(unauthenticated.status, 401);
-  const created = await internal("create", { goal: "ScenarioForge 自动验证专用临时研究包", constraints: {}, files: [] }, "new");
+  const registration = await authenticatedFetch(`${base}/api/auth/register`, { method: "POST", headers: { "Content-Type": "application/json", "X-Real-IP": `198.18.${Math.floor(Math.random() * 256)}.200` }, body: JSON.stringify({ username: `smoke_${randomUUID().replaceAll("-", "").slice(0, 16)}`, password: randomUUID() }) });
+  assert.equal(registration.status, 200);
+  userId = (await registration.json()).user.id;
+  const project = await authenticatedFetch(`${base}/api/projects`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "Smoke fixture project" }) });
+  assert.equal(project.status, 201);
+  projectId = (await project.json()).project.id;
+  const created = await db.researchPackage.create({ data: { projectId, goal: "ScenarioForge 自动验证专用临时研究包", title: "Smoke fixture", taskState: "running", leaseOwner: "smoke-fixture", leaseUntil: new Date(Date.now() + 600000) } });
   id = created.id;
   const names = ["README.md", "RESEARCH.md", "DECISIONS.md", "PLAN.md", "SOURCES.md"];
   const filePlan = names.map((filename) => ({ filename, purpose: `验证 ${filename} 的独立职责`, priority: ["README.md", "RESEARCH.md", "SOURCES.md"].includes(filename) ? "required" : "recommended", contentOutline: ["验证下载与编辑流程"] }));
   await internal("plan", { scenarioType: "smoke", researchQuestions: ["问题一", "问题二", "问题三"], searchQueries: ["smoke"], unknowns: [], filePlan });
   const evidence = await internal("evidence", [{ question: "问题一", claim: "此记录仅用于验证，不是实际研究结论。", sources: [{ title: "测试来源", url: "https://example.com/", snippet: "fixture", accessedAt: new Date().toISOString() }], confidence: "low", impact: "测试", status: "unconfirmed" }]);
   assert.equal(evidence[0].code, "E001");
-  const response = await fetch(`${base}/api/research/${id}`);
+  const response = await authenticatedFetch(`${base}/api/research/${id}`);
   assert.equal(response.status, 200);
   const snapshot = await response.json();
   assert.equal(snapshot.events.length, 2);
@@ -64,32 +79,32 @@ try {
   for (const filename of names) {
     const result = await internal("write_file", { filename, content: `# ${filename}\n\n自动验证内容`, base_version: 0, reason: "验证下载" });
     assert.equal(result.status, "created");
-    const download = await fetch(`${base}/api/research/${id}/files/${filename}`);
+    const download = await authenticatedFetch(`${base}/api/research/${id}/files/${filename}`);
     assert.equal(download.status, 200);
     assert.equal(download.headers.get("content-type"), "text/markdown; charset=utf-8");
     assert.equal(await download.text(), `# ${filename}\n\n自动验证内容`);
   }
   const stale = await internal("write_file", { filename: "PLAN.md", content: "stale", base_version: 0, reason: "旧版本验证" });
   assert.equal(stale.status, "conflict");
-  const zipResponse = await fetch(`${base}/api/research/${id}/workspace`);
+  const zipResponse = await authenticatedFetch(`${base}/api/research/${id}/workspace`);
   assert.equal(zipResponse.status, 200);
   const zip = await JSZip.loadAsync(await zipResponse.arrayBuffer());
   assert.deepEqual(Object.keys(zip.files).sort(), names.sort());
   assert.equal(await zip.file("PLAN.md").async("string"), "# PLAN.md\n\n自动验证内容");
-  assert.equal((await fetch(`${base}/api/research/${id}/files/secret.txt`)).status, 400);
+  assert.equal((await authenticatedFetch(`${base}/api/research/${id}/files/secret.txt`)).status, 400);
   await db.researchPackage.update({ where: { id }, data: { taskState: "running", leaseOwner: "smoke-check", leaseUntil: new Date(Date.now() + 120000) } });
   const fileUrl = `${base}/api/research/${id}/files/PLAN.md`;
   const lockToken = randomUUID();
-  const locked = await fetch(fileUrl, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "lock", baseVersion: 1, lockToken }) });
+  const locked = await authenticatedFetch(fileUrl, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "lock", baseVersion: 1, lockToken }) });
   assert.equal(locked.status, 200);
   const agentLocked = await internal("write_file", { filename: "PLAN.md", content: "agent replacement", base_version: 1, reason: "锁验证" });
   assert.equal(agentLocked.status, "locked");
-  const otherLock = await fetch(fileUrl, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "lock", lockToken: randomUUID() }) });
+  const otherLock = await authenticatedFetch(fileUrl, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "lock", lockToken: randomUUID() }) });
   assert.equal(otherLock.status, 423);
-  const conflict = await fetch(fileUrl, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ baseVersion: 2, content: "outdated user write", lockToken }) });
+  const conflict = await authenticatedFetch(fileUrl, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ baseVersion: 2, content: "outdated user write", lockToken }) });
   assert.equal(conflict.status, 409);
   const userText = "# 用户保留内容\n\n这段文字必须始终保留。";
-  const saved = await fetch(fileUrl, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ baseVersion: 1, content: userText, changeNote: "用户调整计划", lockToken }) });
+  const saved = await authenticatedFetch(fileUrl, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ baseVersion: 1, content: userText, changeNote: "用户调整计划", lockToken }) });
   assert.equal(saved.status, 200);
   const protectedWrite = await internal("write_file", { filename: "PLAN.md", content: "replacement", base_version: 2, reason: "保护验证" });
   assert.equal(protectedWrite.status, "user_modified");
@@ -101,9 +116,9 @@ try {
   const first = await internal("ask", [{ question: "选择目标用户", type: "single_choice", options: ["学生", "所有人"], priority: "blocking", why_needed: "影响方案范围" }]);
   const questionId = first.questions[0].id;
   assert.equal((await db.researchPackage.findUniqueOrThrow({ where: { id } })).status, "waiting_for_user");
-  const badAnswer = await fetch(`${base}/api/research/${id}/answer`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ clarificationId: questionId, answer: "不存在的选项" }) });
+  const badAnswer = await authenticatedFetch(`${base}/api/research/${id}/answer`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ clarificationId: questionId, answer: "不存在的选项" }) });
   assert.equal(badAnswer.status, 400);
-  const answer = await fetch(`${base}/api/research/${id}/answer`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ clarificationId: questionId, answer: "学生" }) });
+  const answer = await authenticatedFetch(`${base}/api/research/${id}/answer`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ clarificationId: questionId, answer: "学生" }) });
   assert.equal(answer.status, 200);
   const answered = await internal("answers", { clarificationId: first.clarificationId });
   assert.equal(answered.answers[0].answered_by, "user");
@@ -115,6 +130,13 @@ try {
   assert.equal(timed.answers[1].status, "blocked");
   console.log("PASS: authentication, evidence, SSE replay, Markdown/ZIP, edit locking/conflicts, permanent user-content protection, Agent notification, clarification resume and timeout policies");
 } finally {
-  if (id) await db.researchPackage.delete({ where: { id } });
-  await db.$disconnect();
+  try {
+    if (id) {
+      await db.knowledgeJob.deleteMany({ where: { packageId: id } });
+      await db.evidence.deleteMany({ where: { packageId: id } });
+      await db.researchPackage.delete({ where: { id } });
+    }
+    if (projectId) await db.project.delete({ where: { id: projectId } });
+    if (userId) await db.user.delete({ where: { id: userId } });
+  } finally { await db.$disconnect(); }
 }

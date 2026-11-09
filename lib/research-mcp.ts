@@ -1,6 +1,7 @@
 import "server-only";
 import { MCPServerStreamableHttp } from "@openai/agents";
 import { ApiError, logError } from "./errors";
+import { RESEARCH_AGENT_BUDGET } from "./agent-budget";
 
 type ReportProgress = (type: string, message: string, payload: { tool: string }) => Promise<unknown>;
 
@@ -22,6 +23,8 @@ const toolLabels: Record<string, string> = {
 };
 
 export class ScopedMcpServer extends MCPServerStreamableHttp {
+  private toolCalls = 0;
+
   constructor(private packageId: string, url: string, private report: ReportProgress) {
     super({
       url,
@@ -69,6 +72,8 @@ export class ScopedMcpServer extends MCPServerStreamableHttp {
 
   override async callToolResult(...args: Parameters<MCPServerStreamableHttp["callToolResult"]>) {
     if (args[0] === "answer_user") throw new ApiError(403, "研究 Agent 不可代替用户回答澄清问题。");
+    if (this.toolCalls >= RESEARCH_AGENT_BUDGET.maxToolCalls) throw new ApiError(429, "本轮研究工具调用已达到上限，已停止以控制开销。");
+    this.toolCalls++;
     args[1] = args[0] === "create_research_package"
       ? { package_id: this.packageId }
       : { ...args[1], package_id: this.packageId };
@@ -90,8 +95,8 @@ export class ScopedMcpServer extends MCPServerStreamableHttp {
           const reason = typeof output.message === "string" ? output.message.slice(0, 500) : "搜索未获得有效证据，请检查搜索配置。";
           throw new ApiError(502, `${label}失败：${reason} 本轮已停止，避免重复调用模型。`);
         }
-        if (output?.status === "generation_failed") {
-          const reason = typeof output.message === "string" ? output.message.slice(0, 500) : "文件生成未完成，已保留现有文件。";
+        if (output?.status === "generation_failed" || output?.status === "planning_failed") {
+          const reason = typeof output.message === "string" ? output.message.slice(0, 500) : output.status === "planning_failed" ? "研究计划未生成，请检查模型配置或目标要求。" : "文件生成未完成，已保留现有文件。";
           const filename = typeof output.filename === "string" && /^[A-Za-z][A-Za-z0-9_-]{0,79}\.md$/.test(output.filename) ? `（${output.filename}）` : "";
           throw new ApiError(502, `${label}失败${filename}：${reason} 本轮已停止。`);
         }

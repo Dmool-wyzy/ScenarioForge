@@ -1,0 +1,114 @@
+import assert from "node:assert/strict";
+import { randomBytes, createHash } from "node:crypto";
+import { test } from "node:test";
+import { db } from "../lib/db";
+import { listNextSteps } from "../lib/next-steps";
+import { listProjects } from "../lib/projects";
+import * as priority from "../app/api/projects/[id]/my-priority/route";
+import * as order from "../app/api/me/project-order/route";
+import * as deadline from "../app/api/projects/[id]/my-action/route";
+import * as actionsRoute from "../app/api/me/next-steps/route";
+import * as personalInbox from "../app/api/projects/[id]/personal-agent/route";
+import * as repositoryRoute from "../app/api/projects/[id]/repository/route";
+assert.equal(process.env.DATABASE_URL,process.env.SCENARIOFORGE_TEST_DATABASE_URL);
+assert.match(new URL(process.env.DATABASE_URL!).pathname,/^\/scenarioforge_test_nextsteps_/);
+const suffix=randomBytes(4).toString("hex");
+const users: string[]=[], projects: string[]=[], packages:string[]=[];
+type Actor={id:string;token:string};
+function request(actor:Actor|null,path:string,body?:unknown) {
+  return new Request(`http://localhost${path}`,{method:body===undefined?"GET":"PUT",headers:{...(actor?{Cookie:`scenarioforge_session=${actor.token}`} : {}),Origin:"http://localhost","Content-Type":"application/json"},...(body===undefined?{}:{body:JSON.stringify(body)})});
+}
+test("isolated accounts persist their own stars/order/deadlines; actions honor private drafts and real Git state",async()=>{
+  try {
+    const actors:Actor[]=[];
+    for(let i=0;i<3;i++){
+      const user=await db.user.create({data:{username:`next_${suffix}_${i}`,passwordHash:"fixture"}});users.push(user.id);
+      const token=randomBytes(32).toString("base64url");await db.authSession.create({data:{userId:user.id,tokenHash:createHash("sha256").update(token).digest("hex"),expiresAt:new Date(Date.now()+3600000)}});actors.push({id:user.id,token});
+    }
+    const [owner,member,outsider]=actors;
+    for(let i=0;i<2;i++){
+      const p=await db.project.create({data:{name:`nextsteps ${i}`,inviteCode:randomBytes(3).toString("hex"),members:{create:[{userId:owner.id,role:"owner"},{userId:member.id,role:"member"}]}}});projects.push(p.id);
+      const pkg=await db.researchPackage.create({data:{projectId:p.id,title:"fixture research",goal:"fixture",status:"completed"}});packages.push(pkg.id);
+    }
+    const p=projects[0],ctx={params:Promise.resolve({id:p})};
+    assert.equal((await priority.PUT(request(null,`/api/projects/${p}/my-priority`,{stars:5}),ctx)).status,401);
+    assert.equal((await priority.PUT(request(outsider,`/api/projects/${p}/my-priority`,{stars:5}),ctx)).status,404);
+    for(const stars of [0,6,2.5,"5"])assert.equal((await priority.PUT(request(owner,`/api/projects/${p}/my-priority`,{stars}),ctx)).status,400);
+    const foreign=new Request(`http://localhost/api/projects/${p}/my-priority`,{method:"PUT",headers:{Origin:"https://untrusted.example",Cookie:`scenarioforge_session=${owner.token}`},body:JSON.stringify({stars:5})});
+    assert.equal((await priority.PUT(foreign,ctx)).status,403);
+    assert.equal((await priority.PUT(request(owner,`/api/projects/${p}/my-priority`,{stars:5}),ctx)).status,200);
+    assert.equal((await listProjects(owner.id)).find(x=>x.id===p)?.stars,5);
+    assert.equal((await listProjects(member.id)).find(x=>x.id===p)?.stars,3);
+    assert.equal((await priority.PUT(request(owner,`/api/projects/${p}/my-priority`,{stars:3}),ctx)).status,200);
+    assert.equal((await order.PUT(request(owner,"/api/me/project-order",{stars:3,projectIds:[projects[1],p]}))).status,200);
+    assert.equal((await listProjects(owner.id)).find(x=>x.id===p)?.sortOrder,1);
+    assert.equal((await listProjects(member.id)).find(x=>x.id===p)?.sortOrder,0);
+    assert.equal((await order.PUT(request(outsider,"/api/me/project-order",{stars:3,projectIds:[p]}))).status,409);
+    const review=await db.agentSubtask.create({data:{packageId:packages[0],runId:suffix,ordinal:1,assigneeId:member.id,objective:"private member draft",context:"PRIVATE_CONTEXT",conversation:JSON.stringify([{role:"user",content:"PRIVATE_HISTORY"}]),result:"PRIVATE_RESULT",status:"review",finishedAt:new Date()}});
+    const waiting=await db.agentSubtask.create({data:{packageId:packages[0],runId:suffix,ordinal:2,assigneeId:member.id,objective:"generating",context:"private",status:"running"}});
+    const question=await db.clarification.create({data:{packageId:packages[0],groupId:"g",questionId:"q",question:"Please decide",whyNeeded:"blocks research",priority:"blocking",expiresAt:new Date()}});
+    let snapshot=await listNextSteps(member.id,request(member,"/"));
+    assert.equal(snapshot.actions.find(a=>a.id===`task:${review.id}`)?.state,"ready");
+    assert.equal(snapshot.actions.find(a=>a.id===`task:${waiting.id}`)?.state,"waiting");
+    assert.ok(!JSON.stringify(snapshot).includes("PRIVATE_"));
+    assert.ok(!(await listNextSteps(owner.id,request(owner,"/"))).actions.some(a=>a.id===`task:${review.id}`));
+    assert.equal((await listNextSteps(owner.id,request(owner,"/"))).actions.find(a=>a.id===`clarification:${question.id}`)?.blocksOthers,true);
+    assert.equal((await listNextSteps(outsider.id,request(outsider,"/"))).actions.length,0);
+    await db.agentSubtask.createMany({data:Array.from({length:51},(_,i)=>({packageId:packages[0],runId:suffix,ordinal:i+10,assigneeId:member.id,objective:`newer ${i}`,context:"fixture",status:"submitted",createdAt:new Date(Date.now()+1000+i)}))});
+    const inbox=await personalInbox.GET(request(member,`/api/projects/${p}/personal-agent?task=${review.id}`),ctx);
+    assert.equal(inbox.status,200);
+    assert.ok((await inbox.json()).tasks.some((t:{id:string})=>t.id===review.id),"an older target remains reachable beyond the latest 50 tasks");
+    const ownerInbox=await personalInbox.GET(request(owner,`/api/projects/${p}/personal-agent?task=${review.id}`),ctx);
+    assert.equal((await ownerInbox.json()).tasks.length,0,"targeting another account's draft does not bypass ownership");
+    assert.equal((await repositoryRoute.GET(request(outsider,`/api/projects/${p}/repository?delivery=${review.id}`),ctx)).status,404);
+    await db.agentSubtask.deleteMany({where:{packageId:packages[0],runId:suffix,ordinal:{gte:10}}});
+    const date="2026-12-01T01:30:00.000Z";
+    assert.equal((await deadline.PUT(request(member,`/api/projects/${p}/my-action`,{actionKey:`task:${review.id}`,dueAt:date}),ctx)).status,200);
+    assert.equal((await deadline.PUT(request(owner,`/api/projects/${p}/my-action`,{actionKey:`task:${review.id}`,dueAt:date}),ctx)).status,409);
+    snapshot=await listNextSteps(member.id,request(member,"/"));assert.equal(snapshot.actions.find(a=>a.id===`task:${review.id}`)?.dueAt,date);
+    await db.researchPackage.update({where:{id:packages[0]},data:{goal:"截止：2026-11-19",constraints:JSON.stringify({deadline:"2026-11-18"}),taskState:"running"}});
+    await db.agentSubtask.update({where:{id:review.id},data:{context:"PRIVATE_CONTEXT 截止：2026-11-17"}});
+    await db.clarification.update({where:{id:question.id},data:{question:"项目截止：2026-11-18，请确认范围"}});
+    snapshot=await listNextSteps(member.id,request(member,"/"));
+    assert.equal(snapshot.actions.find(a=>a.id===`task:${review.id}`)?.dueAt,date,"project dates and task context do not replace personal dates");
+    assert.equal(snapshot.actions.find(a=>a.id===`task:${review.id}`)?.deadlineSource,"personal");
+    assert.equal(snapshot.actions.find(a=>a.id===`task:${waiting.id}`)?.dueAt,null,"undated tasks never inherit research dates");
+    const ownerSnapshot=await listNextSteps(owner.id,request(owner,"/"));
+    assert.equal(ownerSnapshot.actions.find(a=>a.id===`clarification:${question.id}`)?.dueAt,null);
+    assert.equal(ownerSnapshot.actions.find(a=>a.id===`research:${packages[0]}`)?.dueAt,null);
+    assert.equal((await deadline.PUT(request(member,`/api/projects/${p}/my-action`,{actionKey:`task:${review.id}`,dueAt:null}),ctx)).status,200,"personal dates remain clearable despite project deadlines");
+    assert.equal((await listNextSteps(member.id,request(member,"/"))).actions.find(a=>a.id===`task:${review.id}`)?.dueAt,null);
+    assert.equal((await deadline.PUT(request(member,`/api/projects/${p}/my-action`,{actionKey:`task:${review.id}`,dueAt:date}),ctx)).status,200,"undated task descriptions still allow personal dates");
+    await db.agentSubtask.update({where:{id:review.id},data:{objective:"完成报告，截止时间：2026年11月12日 18:00"}});
+    snapshot=await listNextSteps(member.id,request(member,"/"));
+    assert.equal(snapshot.actions.find(a=>a.id===`task:${review.id}`)?.dueAt,"2026-11-12T10:00:00.000Z");
+    assert.equal(snapshot.actions.find(a=>a.id===`task:${review.id}`)?.deadlineSource,"task");
+    for (const dueAt of [date,null]) assert.equal((await deadline.PUT(request(member,`/api/projects/${p}/my-action`,{actionKey:`task:${review.id}`,dueAt}),ctx)).status,409,"task description deadlines cannot be overwritten or cleared by personal settings");
+    assert.ok(!JSON.stringify(snapshot).includes("PRIVATE_"));
+    await db.agentSubtask.update({where:{id:review.id},data:{objective:"private member draft"}});
+    snapshot=await listNextSteps(member.id,request(member,"/"));
+    assert.equal(snapshot.actions.find(a=>a.id===`task:${review.id}`)?.dueAt,date,"personal settings return when description loses its date, even while project dates remain");
+    assert.equal(snapshot.actions.find(a=>a.id===`task:${review.id}`)?.deadlineSource,"personal");
+    const entered=snapshot.actions.find(a=>a.id===`task:${review.id}`)?.waitingSince;
+    await db.agentSubtask.update({where:{id:review.id},data:{revision:{increment:1}}});
+    assert.equal((await listNextSteps(member.id,request(member,"/"))).actions.find(a=>a.id===`task:${review.id}`)?.waitingSince,entered);
+    await db.agentSubtask.update({where:{id:review.id},data:{status:"submitted",objective:"完成报告，截止时间：2026年11月12日 18:00"}});
+    await db.project.update({where:{id:p},data:{repositoryEnabled:true}});
+    const git=async()=>({enabled:true,tasks:[{id:review.id,git:{merged:false}}]});
+    assert.equal((await listNextSteps(owner.id,request(owner,"/"),git)).actions.find(a=>a.id===`delivery:${review.id}`)?.state,"ready");
+    assert.equal((await listNextSteps(member.id,request(member,"/"),git)).actions.find(a=>a.id===`delivery:${review.id}`)?.state,"waiting");
+    assert.equal((await listNextSteps(owner.id,request(owner,"/"),git)).actions.find(a=>a.id===`delivery:${review.id}`)?.dueAt,"2026-11-12T10:00:00.000Z","known deadline follows the delivery into review");
+    assert.ok(!(await listNextSteps(owner.id,request(owner,"/"),async()=>({enabled:true,tasks:[{id:review.id,git:{merged:true}}]}))).actions.some(a=>a.id===`delivery:${review.id}`));
+    const offline=await listNextSteps(owner.id,request(owner,"/"),async()=>{throw new Error("private error");});
+    assert.equal(offline.warnings.length,1);assert.ok(!JSON.stringify(offline).includes("private error"));
+    await db.clarification.update({where:{id:question.id},data:{status:"answered"}});
+    assert.ok(!(await listNextSteps(owner.id,request(owner,"/"),git)).actions.some(a=>a.id===`clarification:${question.id}`));
+    assert.equal((await actionsRoute.GET(request(null,"/api/me/next-steps"))).status,401);
+  } finally {
+    await db.researchPackage.deleteMany({where:{id:{in:packages}}});
+    await db.project.deleteMany({where:{id:{in:projects}}});
+    assert.equal(await db.personalProjectPriority.count({where:{userId:{in:users}}}),0);
+    assert.equal(await db.personalActionSetting.count({where:{userId:{in:users}}}),0);
+    await db.user.deleteMany({where:{id:{in:users}}});await db.$disconnect();
+  }
+});

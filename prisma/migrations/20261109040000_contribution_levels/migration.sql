@@ -1,0 +1,23 @@
+CREATE TABLE `ContributionRecord` (
+  `id` VARCHAR(100) NOT NULL,
+  `userId` VARCHAR(100) NOT NULL,
+  `projectId` VARCHAR(100) NULL,
+  `packageId` VARCHAR(100) NOT NULL,
+  `sourceKey` VARCHAR(180) NOT NULL,
+  `kind` VARCHAR(20) NOT NULL,
+  `title` VARCHAR(240) NOT NULL,
+  `points` INTEGER NOT NULL,
+  `confirmedBy` VARCHAR(100) NOT NULL,
+  `note` VARCHAR(600) NOT NULL,
+  `revokedAt` DATETIME(3) NULL,
+  `revokeReason` VARCHAR(600) NOT NULL DEFAULT '',
+  `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updatedAt` DATETIME(3) NOT NULL,
+  UNIQUE INDEX `ContributionRecord_userId_sourceKey_key` (`userId`, `sourceKey`),
+  INDEX `ContributionRecord_userId_revokedAt_createdAt_idx` (`userId`, `revokedAt`, `createdAt`),
+  INDEX `ContributionRecord_projectId_sourceKey_idx` (`projectId`, `sourceKey`),
+  INDEX `ContributionRecord_projectId_packageId_revokedAt_idx` (`projectId`, `packageId`, `revokedAt`),
+  PRIMARY KEY (`id`),
+  CONSTRAINT `ContributionRecord_userId_fkey` FOREIGN KEY (`userId`) REFERENCES `User` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT `ContributionRecord_projectId_fkey` FOREIGN KEY (`projectId`) REFERENCES `Project` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
+) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;

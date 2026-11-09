@@ -1,4 +1,4 @@
-export type SearchProviderName = "searxng" | "ddgs" | "tavily" | "mock";
+export type SearchProviderName = "searxng" | "ddgs" | "tavily" | "deepseek" | "mock";
 export type SearchSource = { title: string; url: string; snippet: string; publishedDate?: string };
 export type SearchResult = { query: string; provider: SearchProviderName; results: SearchSource[]; fetchedAt: string };
 export type SearchInput = { query: string; maxResults: number };

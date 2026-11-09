@@ -15,7 +15,7 @@ export function logError(error: unknown) {
     const key = projectModelEnv().OPENAI_API_KEY;
     if (key) detail = detail.split(key).join("[REDACTED]");
   } catch { /* Configuration errors still need to be logged. */ }
-  for (const name of ["OPENAI_API_KEY", "EMBEDDING_API_KEY", "TAVILY_API_KEY", "SCENARIOFORGE_INTERNAL_TOKEN"]) {
+  for (const name of ["OPENAI_API_KEY", "EMBEDDING_API_KEY", "TAVILY_API_KEY", "SCENARIOFORGE_INTERNAL_TOKEN", "DATABASE_URL"]) {
     const secret = process.env[name];
     if (secret) detail = detail.split(secret).join("[REDACTED]");
   }
@@ -32,7 +32,7 @@ export function publicError(error: unknown) {
   if (error instanceof OpenAI.AuthenticationError) return "模型服务认证失败，本轮已停止。请检查项目专用 API key 和模型服务地址。";
   if (error instanceof OpenAI.APIError) return "模型服务返回错误，本轮已停止，未自动重试。请检查模型名、API 模式及服务商状态。";
   if (error instanceof ZodError) return "输入格式不正确或超过长度限制，请检查后重试。";
-  if (error instanceof Error && error.message.startsWith("环境变量缺失或无效：")) return error.message;
+  if (error instanceof Error && error.message.startsWith("环境变量缺失或无效：")) return process.env.NODE_ENV === "production" ? "研究服务尚未完成模型配置，请联系管理员。项目协作功能可正常使用。" : error.message;
   if (error instanceof Error && error.message.startsWith("SEARCH_PROVIDER 无效")) return error.message;
   return "服务暂时无法完成请求，请检查服务端配置或稍后重试。";
 }

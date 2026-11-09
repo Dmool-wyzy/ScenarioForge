@@ -16,7 +16,7 @@ with sqlite3.connect(live) as original:
     with sqlite3.connect(copy_path) as copy:
         original.backup(copy)
 with sqlite3.connect(copy_path) as copy:
-    copy.executescript((root / "prisma/migrations/20261016060000_rag_foundation/migration.sql").read_text(encoding="utf-8"))
+    copy.executescript((root / "prisma/sqlite-migrations/20261016060000_rag_foundation/migration.sql").read_text(encoding="utf-8"))
     for table, count in counts.items():
         assert copy.execute(f'SELECT count(*) FROM "{table}"').fetchone()[0] == count, table
     assert not copy.execute("PRAGMA foreign_key_check").fetchall()
