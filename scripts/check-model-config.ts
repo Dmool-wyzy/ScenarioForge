@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import http from "node:http";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { resolve, join, sep } from "node:path";
 import { test } from "node:test";
 import { Agent, Runner } from "@openai/agents";
@@ -10,6 +10,7 @@ import { logError } from "../lib/errors";
 
 test("project model credentials reach HTTP authorization instead of the inherited system key", async () => {
   const original = { ...process.env };
+  mkdirSync(resolve(".tmp"), { recursive: true });
   const directory = mkdtempSync(resolve(".tmp/model-config-"));
   const file = join(directory, ".env.local");
   const requests: { authorization?: string; model: string }[] = [];
@@ -22,10 +23,12 @@ test("project model credentials reach HTTP authorization instead of the inherite
   await new Promise<void>(done => server.listen(0, "127.0.0.1", done));
   const address = server.address();
   assert.ok(address && typeof address !== "string");
-  writeFileSync(file, `OPENAI_API_KEY=project-only-key\nOPENAI_BASE_URL=http://127.0.0.1:${address.port}/v1\nOPENAI_API_MODE=responses\nSCENARIOFORGE_MODEL=project-model\n`);
+  writeFileSync(file, `OPENAI_API_KEY=project-only-key\nOPENAI_BASE_URL=http://127.0.0.1:${address.port}/v1\nOPENAI_API_MODE=responses\nSCENARIOFORGE_MODEL=project-model\nMODEL_REASONING_EFFORT=low\nMODEL_MAX_OUTPUT_TOKENS=1234\n`);
   Object.assign(process.env, { SCENARIOFORGE_ENV_FILE: file, OPENAI_API_KEY: "system-only-key", OPENAI_BASE_URL: "http://system.invalid/v1", SCENARIOFORGE_MODEL: "system-model", SCENARIOFORGE_INTERNAL_TOKEN: "fixture-token-".repeat(3) });
   const provider = createModelProvider();
   try {
+    assert.equal(getResearchConfig().MODEL_REASONING_EFFORT, "low");
+    assert.equal(getResearchConfig().MODEL_MAX_OUTPUT_TOKENS, 1234);
     const runner = new Runner({ modelProvider: provider, tracingDisabled: true });
     await runner.run(new Agent({ name: "config fixture", model: getResearchConfig().SCENARIOFORGE_MODEL }), "test");
     assert.deepEqual(requests, [{ authorization: "Bearer project-only-key", model: "project-model" }]);

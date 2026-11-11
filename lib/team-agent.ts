@@ -7,6 +7,7 @@ import { ApiError, publicError, logError } from "./errors";
 import { TEAM_SUBTASK_BUDGET, logModelUsage, summarizeModelUsage } from "./agent-budget";
 import { createModelProvider } from "./openai";
 import { modelProviderData, personalAgentResearchConfig } from "./model-settings";
+import { modelPolicyFromConfig, resolveModelOutputTokens } from "./model-policy";
 import { personalAgentPreferences } from "./personal-center";
 
 export const delegatedTasksSchema = z.object({
@@ -32,7 +33,7 @@ export function createTeamSubagent(model: string | Model, settings: ModelSetting
     name: "ScenarioForge Team Subagent",
     model,
     instructions: TEAM_SUBAGENT_INSTRUCTIONS,
-    modelSettings: { ...settings, maxTokens: TEAM_SUBTASK_BUDGET.maxOutputTokensPerTask, parallelToolCalls: false, retry: { maxRetries: 0 } },
+    modelSettings: { ...settings, maxTokens: settings.maxTokens ?? TEAM_SUBTASK_BUDGET.maxOutputTokensPerTask, parallelToolCalls: false, retry: { maxRetries: 0 } },
     tools: [],
   });
 }
@@ -133,5 +134,5 @@ export async function dispatchTeamSubtasks(args: {
 export async function resolvePersonalSubagent(projectId: string, userId: string) {
   const env = await personalAgentResearchConfig(projectId, userId);
   const provider = createModelProvider(env);
-  return { model: env.SCENARIOFORGE_MODEL, provider, apiKey: env.OPENAI_API_KEY, close: () => provider.close(), settings: { providerData: modelProviderData({ baseUrl: env.OPENAI_BASE_URL, apiMode: env.OPENAI_API_MODE }) } };
+  return { model: env.SCENARIOFORGE_MODEL, provider, apiKey: env.OPENAI_API_KEY, close: () => provider.close(), settings: { providerData: modelProviderData(modelPolicyFromConfig(env)), maxTokens: resolveModelOutputTokens(modelPolicyFromConfig(env), TEAM_SUBTASK_BUDGET.maxOutputTokensPerTask) } };
 }

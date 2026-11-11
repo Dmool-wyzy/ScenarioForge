@@ -6,27 +6,29 @@ import { ApiError } from "./errors";
 import { getResearchConfig } from "./env";
 import { modelAddress, modelBaseUrl } from "./model-endpoint";
 import { requireProjectAccess } from "./auth";
+import { isOfficialDeepSeek, MAX_MODEL_OUTPUT_TOKENS, MIN_MODEL_OUTPUT_TOKENS, modelProtocolProviderData, REASONING_EFFORTS, type ModelPolicySettings } from "./model-policy";
 
 export const modelSettingsSchema = z.object({
   baseUrl: z.string().trim().min(1).max(2000).transform(modelBaseUrl),
   model: z.string().trim().min(1).max(200).regex(/^[^\s\x00-\x1f]+$/),
   apiMode: z.enum(["responses", "chat_completions"]),
   timeoutSeconds: z.number().int().min(10).max(300).default(120),
+  reasoningEffort: z.enum(REASONING_EFFORTS).default("auto"),
+  maxOutputTokens: z.number().int().min(MIN_MODEL_OUTPUT_TOKENS).max(MAX_MODEL_OUTPUT_TOKENS).nullable().default(null),
   deepseekSearchEnabled: z.boolean().default(false),
   apiKey: z.string().trim().max(4096).regex(/^[\x21-\x7e]*$/).optional(),
 }).refine(settings => !settings.deepseekSearchEnabled || new URL(settings.baseUrl).hostname === "api.deepseek.com", {
   message: "DeepSeek Search 仅支持 api.deepseek.com。",
   path: ["deepseekSearchEnabled"],
+}).refine(settings => settings.reasoningEffort !== "medium" || !isOfficialDeepSeek(settings.baseUrl), {
+  message: "DeepSeek 未提供独立的中等思考档位，请选择关闭、低、高或最高。", path: ["reasoningEffort"],
 });
-export type ModelSettings = Omit<z.infer<typeof modelSettingsSchema>, "apiKey"> & { apiKey: string };
+type ParsedModelSettings = z.infer<typeof modelSettingsSchema>;
+export type ModelSettings = Omit<ParsedModelSettings, "apiKey" | "reasoningEffort" | "maxOutputTokens"> & { apiKey: string }
+  & Partial<Pick<ParsedModelSettings, "reasoningEffort" | "maxOutputTokens">>;
 export type ResearchConfig = ReturnType<typeof getResearchConfig> & { PROJECT_MODEL_CONFIG?: boolean; MODEL_VALIDATED_ADDRESS?: string; DEEPSEEK_SEARCH_ENABLED?: boolean; AGENT_RUN_ID?: string | null };
 
-export function modelProviderData(settings: Pick<ModelSettings, "baseUrl" | "apiMode">) {
-  // DeepSeek thinking mode rejects forced tool selection and requires reasoning history.
-  return settings.apiMode === "chat_completions" && new URL(settings.baseUrl).hostname === "api.deepseek.com"
-    ? { thinking: { type: "disabled" as const } }
-    : {};
-}
+export function modelProviderData(settings: ModelPolicySettings) { return modelProtocolProviderData(settings); }
 
 function encryptionKey() {
   const value = process.env.SCENARIOFORGE_SETTINGS_KEY;
@@ -61,6 +63,11 @@ function decryptSettings(scope: string, value: string): ModelSettings {
     cipher.setAAD(Buffer.from(scope));
     cipher.setAuthTag(Buffer.from(tag, "base64"));
     const decoded = JSON.parse(Buffer.concat([cipher.update(Buffer.from(data, "base64")), cipher.final()]).toString("utf8"));
+    // Existing encrypted snapshots predate explicit thinking settings. Preserve
+    // their original protocol behavior until the user saves a chosen policy.
+    if (decoded && typeof decoded === "object" && !Object.hasOwn(decoded, "reasoningEffort")) {
+      decoded.reasoningEffort = decoded.apiMode === "chat_completions" && typeof decoded.baseUrl === "string" && isOfficialDeepSeek(decoded.baseUrl) ? "none" : "default";
+    }
     const settings = modelSettingsSchema.parse(decoded);
     if (!settings.apiKey) throw new Error("Missing key");
     return { ...settings, apiKey: settings.apiKey };
@@ -76,7 +83,7 @@ export async function storedModelSettings(projectId: string) {
 export function settingsMetadata(settings: ModelSettings | null) {
   if (!settings) return null;
   const { baseUrl, model, apiMode, timeoutSeconds, deepseekSearchEnabled } = settings;
-  return { baseUrl, model, apiMode, timeoutSeconds, deepseekSearchEnabled, hasApiKey: true };
+  return { baseUrl, model, apiMode, timeoutSeconds, reasoningEffort: settings.reasoningEffort ?? "auto", maxOutputTokens: settings.maxOutputTokens ?? null, deepseekSearchEnabled, hasApiKey: true };
 }
 
 export async function modelSettingsAccess(request: Request, projectId: string, write = false) {
@@ -110,7 +117,7 @@ export function decryptPersonalAgentSettings(projectId: string, userId: string, 
 export function personalAgentSettingsMetadata(settings: ModelSettings | null) {
   if (!settings) return null;
   const { baseUrl, model, apiMode, timeoutSeconds } = settings;
-  return { baseUrl, model, apiMode, timeoutSeconds, hasApiKey: true };
+  return { baseUrl, model, apiMode, timeoutSeconds, reasoningEffort: settings.reasoningEffort ?? "auto", maxOutputTokens: settings.maxOutputTokens ?? null, hasApiKey: true };
 }
 
 export async function storedPersonalAgentSettings(projectId: string, userId: string) {
@@ -141,6 +148,8 @@ export async function personalAgentResearchConfig(projectId: string, userId: str
     OPENAI_API_MODE: settings.apiMode,
     SCENARIOFORGE_MODEL: settings.model,
     MODEL_TIMEOUT_SECONDS: String(settings.timeoutSeconds),
+    MODEL_REASONING_EFFORT: settings.reasoningEffort ?? "auto",
+    MODEL_MAX_OUTPUT_TOKENS: settings.maxOutputTokens == null ? "" : String(settings.maxOutputTokens),
   }), PROJECT_MODEL_CONFIG: true, MODEL_VALIDATED_ADDRESS: address };
 }
 
@@ -154,6 +163,8 @@ async function resolveResearchConfig(projectId?: string | null, encrypted?: stri
     OPENAI_API_MODE: settings.apiMode,
     SCENARIOFORGE_MODEL: settings.model,
     MODEL_TIMEOUT_SECONDS: String(settings.timeoutSeconds),
+    MODEL_REASONING_EFFORT: settings.reasoningEffort ?? "auto",
+    MODEL_MAX_OUTPUT_TOKENS: settings.maxOutputTokens == null ? "" : String(settings.maxOutputTokens),
   }), PROJECT_MODEL_CONFIG: true, MODEL_VALIDATED_ADDRESS: address, DEEPSEEK_SEARCH_ENABLED: settings.deepseekSearchEnabled };
 }
 

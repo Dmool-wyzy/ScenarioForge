@@ -14,17 +14,26 @@ import { LocalRunnerWorkspace } from "./local-runner";
 import type { WorkspacePort } from "./port";
 import type { SkillFile, Verification } from "./types";
 import { createProgressReporter, type ReportExecutionProgress } from "./progress";
+import { modelPolicyFromConfig, type ModelPolicySettings } from "../model-policy";
+import type { ModelDiagnosticOptions } from "../model-diagnostics";
+import { modelDiagnosticProgress } from "./model-progress";
+import { workspaceFailureDiagnostic } from "./failure-diagnostic";
 
 const LEASE_MS = 120000;
 const state = globalThis as unknown as { workspaceExecutionTick?: boolean };
-export type ExecutionRuntime = { model: string | Model; settings?: ModelSettings; runner?: Runner; close?: () => Promise<void> };
-export type ResolveExecutionModel = (run: WorkspaceExecution) => Promise<ExecutionRuntime>;
-const resolveExecutionModel: ResolveExecutionModel = async run => {
+export type ExecutionRuntime = { model: string | Model; settings?: ModelSettings; policy?: ModelPolicySettings; modelDiagnostics?: boolean; runner?: Runner; close?: () => Promise<void> };
+export type ResolveExecutionModel = (run: WorkspaceExecution, onProgress?: ReportExecutionProgress) => Promise<ExecutionRuntime>;
+const resolveExecutionModel: ResolveExecutionModel = async (run, onProgress) => {
   const projectId = (await db.researchPackage.findUniqueOrThrow({ where: { id: run.packageId }, select: { projectId: true } })).projectId;
   if (!projectId) throw new ApiError(409, "任务项目不存在。");
   const env = await executionResearchConfig(projectId, run.modelConfigEncrypted);
-  const provider = createModelProvider(env);
-  return { model: env.SCENARIOFORGE_MODEL, settings: { providerData: modelProviderData({ baseUrl: env.OPENAI_BASE_URL, apiMode: env.OPENAI_API_MODE }) },
+  const policy = modelPolicyFromConfig(env), scope = randomUUID();
+  const onDiagnostic: ModelDiagnosticOptions["onDiagnostic"] = onProgress ? async diagnostic => {
+    const { message, progress } = modelDiagnosticProgress(diagnostic, scope, env.MODEL_TIMEOUT_SECONDS, policy.maxOutputTokens != null);
+    await onProgress(message, progress);
+  } : undefined;
+  const provider = createModelProvider(env, { onDiagnostic });
+  return { model: env.SCENARIOFORGE_MODEL, policy, modelDiagnostics: Boolean(onDiagnostic), settings: { providerData: modelProviderData(policy) },
     runner: new Runner({ modelProvider: provider, tracingDisabled: true, traceIncludeSensitiveData: false }), close: () => provider.close() };
 };
 // Internal entry point also lets isolated database acceptance use a deterministic model.
@@ -82,7 +91,7 @@ export async function executeWorkspaceExecution(id: string, resolveModel: Resolv
       await tx.workspaceExecution.update({ where: { id }, data: { ...prepared, verification: JSON.stringify(checksAtHead(latest.verification, prepared.head)) } });
     });
     await assertActive();
-    const runtime = await resolveModel(run); close = runtime.close;
+    const runtime = await resolveModel(run, onProgress); close = runtime.close;
     const onCheckpoint = async (head: string, verification?: Verification) => {
       await assertActive();
       await db.$transaction(async tx => {
@@ -99,7 +108,7 @@ export async function executeWorkspaceExecution(id: string, resolveModel: Resolv
     };
     await emitEvent(run.packageId, "execution_started", "Agent 开始读取技能与工作区", { executionId: id, branch: prepared.branch });
     const result = await runWorkspaceAgent({ model: runtime.model, settings: runtime.settings,
-      runner: runtime.runner, workspace,
+      runner: runtime.runner, workspace, policy: runtime.policy, modelDiagnostics: runtime.modelDiagnostics,
       skills, request: run.request, baseCommit: prepared.baseCommit, signal: abort.signal, onCheckpoint,
       onProgress });
     await assertActive();
@@ -113,6 +122,9 @@ export async function executeWorkspaceExecution(id: string, resolveModel: Resolv
     const latest = await db.workspaceExecution.findUnique({ where: { id } });
     const stopped = latest?.status === "stopping";
     const message = stopped ? "任务已停止，已保存文件和技能快照保留，可从原分支继续。" : abort.signal.aborted ? "执行超时或中断，文件保留，可从原分支继续。" : publicError(error);
+    if (!stopped && !abort.signal.aborted && message === "服务暂时无法完成请求，请检查服务端配置或稍后重试。") {
+      console.error("[ScenarioForge] Workspace execution diagnostic", JSON.stringify({ executionId: id, ...workspaceFailureDiagnostic(error) }));
+    }
     const updated = await db.workspaceExecution.updateMany({ where: { id, leaseOwner: owner }, data: { status: stopped ? "stopped" : "failed", error: message, leaseOwner: null, leaseUntil: null } });
     if (updated.count && packageId) await emitEvent(packageId, "execution_failed", message, { executionId: id });
   } finally {

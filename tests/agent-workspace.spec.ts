@@ -356,6 +356,46 @@ test("执行进度合并操作前后事件，显示技能、文件、耗时并�
   await expect(timeline.locator(":scope > li").filter({ hasText: "正在读取 src/add.mjs" })).toContainText("未记录完成");
 });
 
+test("文件读取提示保持任务运行，重新读取后才展示保存成功", async ({ page }) => {
+  const message = "本次未保存：请先读取最新文件 README.md 后继续。";
+  const events = [
+    operationEvent(1, "正在保存 1 个文件变更", { operationId: "write-before-read", phase: "started", action: "apply_changes", paths: ["README.md"], fileCount: 1 }),
+    operationEvent(2, message, { operationId: "write-before-read", phase: "completed", action: "apply_changes", paths: ["README.md"], fileCount: 1, status: "unavailable", recovery: "file_read_required", durationMs: 200 }),
+  ];
+  const fixture = await workspacePage(page, { local: true, initialStatus: "running", runners: [runner], events });
+  await page.goto("/?project=project-fixture&package=research-fixture");
+  await page.getByRole("tab", { name: "执行工作区", exact: true }).click();
+  const panel = page.getByRole("region", { name: "Agent 执行工作区", exact: true });
+  const timeline = panel.getByRole("list", { name: "执行任务进度", exact: true });
+  const recovery = timeline.locator(":scope > li").filter({ hasText: message });
+  await expect(timeline.locator(":scope > li")).toHaveCount(1);
+  await expect(recovery).toContainText("需要重新读取");
+  await expect(recovery).not.toContainText("已完成");
+  await expect(timeline).not.toContainText("已保存");
+  await expect(panel.getByLabel("当前执行步骤", { exact: true })).toContainText(message);
+  await expect(panel.getByText("正在执行", { exact: true })).toBeVisible();
+  await expect(panel.getByRole("button", { name: "停止任务", exact: true })).toBeVisible();
+  await expect(panel).not.toContainText("任务已中断");
+
+  fixture.updateProgress([...events,
+    operationEvent(3, "正在读取 README.md", { operationId: "read-current", phase: "started", action: "read_file", paths: ["README.md"] }),
+    operationEvent(4, "已读取 README.md", { operationId: "read-current", phase: "completed", action: "read_file", paths: ["README.md"], durationMs: 80 }),
+    operationEvent(5, "正在保存 1 个文件变更", { operationId: "write-after-read", phase: "started", action: "apply_changes", paths: ["README.md"], fileCount: 1 }),
+    operationEvent(6, "已保存 1 个文件变更：修改 README.md", { operationId: "write-after-read", phase: "completed", action: "apply_changes", paths: ["README.md"], fileCount: 1, durationMs: 120 }),
+  ]);
+  await page.reload();
+  await page.getByRole("tab", { name: "执行工作区", exact: true }).click();
+  await expect(timeline.locator(":scope > li")).toHaveCount(3);
+  await expect(recovery).toContainText("需要重新读取");
+  await expect(recovery).not.toContainText("已保存");
+  await expect(timeline.locator(":scope > li").filter({ hasText: "已读取 README.md" })).toContainText("已完成");
+  await expect(timeline.locator(":scope > li").filter({ hasText: "已保存 1 个文件变更：修改 README.md" })).toContainText("已完成");
+  await expect(panel.getByLabel("当前执行步骤", { exact: true })).toContainText("已保存 1 个文件变更：修改 README.md");
+  await expect(panel.getByText("正在执行", { exact: true })).toBeVisible();
+  await expect(panel).not.toContainText("任务已中断");
+  expect(fixture.requests).toHaveLength(0);
+});
+
 test("待审批优先于执行中，未执行命令显示真实结果，终态不保留旧等待提示", async ({ page }) => {
   const command = ["node", "--test", "tests/add.test.mjs"];
   const approval: CommandApproval = { id: "command-progress", command, head: "b".repeat(40), expiresAt: new Date(Date.now() + 120_000).toISOString() };

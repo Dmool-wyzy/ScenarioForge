@@ -11,10 +11,12 @@ import { emitEvent } from "./events";
 import { searchProviderName } from "./search/index";
 import { ragEnabled, embeddingConfig } from "./rag/config";
 import { RESEARCH_AGENT_BUDGET, logModelUsage, summarizeModelUsage } from "./agent-budget";
+import { modelPolicyFromConfig, resolveModelOutputTokens } from "./model-policy";
 
 export async function runResearchAgent(packageId: string, message: string, signal: AbortSignal) {
   if (ragEnabled()) embeddingConfig();
   const env = await packageResearchConfig(packageId);
+  const policy = modelPolicyFromConfig(env);
   const activeSearchProvider = searchProviderName(env);
   const context = await getContext(packageId, activeSearchProvider);
   const mcp = new ScopedMcpServer(packageId, env.SCENARIOFORGE_MCP_URL,
@@ -30,7 +32,7 @@ export async function runResearchAgent(packageId: string, message: string, signa
         return RESEARCH_PLANNER_INSTRUCTIONS + `\n当前研究包 ID：${packageId}\n当前搜索 Provider：${activeSearchProvider}。真实搜索模式下，历史 Mock 证据不能作为已完成真实检索的依据。\n已完成的研究问题：${JSON.stringify(latest.searchedQuestions)}\n最新上下文版本：${latest.contextVersion}\n最新文件计划：${JSON.stringify(latest.researchPlan?.filePlan ?? [])}\n最新澄清答案：${JSON.stringify(latest.clarifications)}\n最新文件版本：${JSON.stringify(latest.files.map((f) => ({ filename: f.filename, version: f.version, updatedBy: f.updatedBy, lockedBy: f.lockedBy })))}\n涉及用户修改文件时必须再次 read_workspace_file。`;
       },
       model: env.SCENARIOFORGE_MODEL,
-      modelSettings: { maxTokens: RESEARCH_AGENT_BUDGET.maxOutputTokens, parallelToolCalls: false, retry: { maxRetries: 0 }, providerData: modelProviderData({ baseUrl: env.OPENAI_BASE_URL, apiMode: env.OPENAI_API_MODE }) },
+      modelSettings: { maxTokens: resolveModelOutputTokens(policy, RESEARCH_AGENT_BUDGET.maxOutputTokens), parallelToolCalls: false, retry: { maxRetries: 0 }, providerData: modelProviderData(policy) },
       mcpServers: [mcp],
       mcpConfig: { convertSchemasToStrict: true },
       toolUseBehavior: async () => {

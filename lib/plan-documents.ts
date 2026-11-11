@@ -8,7 +8,9 @@ import { appendEvent } from "./events";
 import { getContext } from "./research";
 import { goalSchema } from "./validation";
 import { packageResearchConfig, modelProviderData } from "./model-settings";
+import { modelPolicyFromConfig, resolveModelOutputTokens } from "./model-policy";
 import { createModelProvider } from "./openai";
+import { assertStructuredOutputSupported } from "./model-capabilities";
 import { logModelUsage, summarizeModelUsage } from "./agent-budget";
 import { ragEnabled } from "./rag/config";
 import { saveSource } from "./rag/sources";
@@ -157,7 +159,7 @@ export async function generatePlanDocuments(args: { model: string | Model; runne
   if (input.length > 50000) throw new ApiError(413, "当前方案资料超过 50000 字符，请缩小本次任务范围。");
   const selectedOutput = documents ? z.object({ documents: z.array(z.object({ filename: z.enum(documents.map(item => item.filename) as [string, ...string[]]), content: z.string().trim().min(40).max(12000) }).strict()).length(documents.length) }).strict() : outputSchema;
   const agent = new Agent({ name: "ScenarioForge Plan Documents", model: args.model, instructions: documents ? dynamicInstructions : instructions, outputType: selectedOutput,
-    modelSettings: { ...args.settings, maxTokens: documents ? Math.max(8192, Math.min(24576, documents.length * 4096)) : 8192, parallelToolCalls: false, retry: { maxRetries: 0 } } });
+    modelSettings: { ...args.settings, maxTokens: args.settings?.maxTokens ?? (documents ? Math.max(8192, Math.min(24576, documents.length * 4096)) : 8192), parallelToolCalls: false, retry: { maxRetries: 0 } } });
   const result = await (args.runner ?? new Runner({ tracingDisabled: true })).run(agent, input, { maxTurns: 1, signal: args.signal });
   return { documents: planDocumentsFromOutput(result.finalOutput, documents), responses: result.rawResponses };
 }
@@ -180,10 +182,12 @@ export async function runPlanDocumentJob(packageId: string, owner: string, reque
     evidence: context.evidence.slice(0, 5).map(item => ({ claim: item.claim.slice(0, 1000), status: item.status })),
     existingDocuments: previous.filter(file => filenames.includes(file.filename)).map(file => ({ filename: file.filename, content: file.content.slice(0, 6000) })) });
   if (input.length > 50000) throw new ApiError(413, "当前方案资料超过 50000 字符，请缩小本次任务范围。");
-  const env = await packageResearchConfig(packageId), provider = createModelProvider(env);
+  const env = await packageResearchConfig(packageId);
+  assertStructuredOutputSupported({ baseUrl: env.OPENAI_BASE_URL, apiMode: env.OPENAI_API_MODE });
+  const provider = createModelProvider(env);
   try {
     const generated = await generatePlanDocuments({ model: env.SCENARIOFORGE_MODEL, runner: new Runner({ modelProvider: provider, tracingDisabled: true, traceIncludeSensitiveData: false }),
-      settings: { providerData: modelProviderData({ baseUrl: env.OPENAI_BASE_URL, apiMode: env.OPENAI_API_MODE }) }, input, signal, documents });
+      settings: { providerData: modelProviderData(modelPolicyFromConfig(env)), maxTokens: resolveModelOutputTokens(modelPolicyFromConfig(env), documents ? Math.max(8192, Math.min(24576, documents.length * 4096)) : 8192) }, input, signal, documents });
     logModelUsage(packageId, "plan_documents", summarizeModelUsage(generated.responses));
     signal.throwIfAborted();
     await saveGeneratedPlanDocuments(packageId, owner, userId, contextVersion, previous, generated.documents);

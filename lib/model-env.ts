@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parseEnv } from "node:util";
 
-const modelKeys = ["OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_API_MODE", "SCENARIOFORGE_MODEL", "MODEL_TIMEOUT_SECONDS"];
+const modelKeys = ["OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_API_MODE", "SCENARIOFORGE_MODEL", "MODEL_TIMEOUT_SECONDS", "MODEL_REASONING_EFFORT", "MODEL_MAX_OUTPUT_TOKENS"];
 
 export function projectModelEnv(): Record<string, string> {
   // Isolated tests can explicitly select another file or use an empty path.

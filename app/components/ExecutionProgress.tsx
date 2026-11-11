@@ -12,8 +12,10 @@ function progressOf(event: ResearchEvent): Progress | undefined {
 function duration(milliseconds: number) {
   return milliseconds < 1000 ? `${Math.round(milliseconds)} 毫秒` : `${(milliseconds / 1000).toFixed(1)} 秒`;
 }
+const effortLabels: Record<string, string> = { none: "关闭", minimal: "最低", low: "低", medium: "中", high: "高", xhigh: "较高", max: "最高" };
 function phaseLabel(progress: Progress | undefined, active: boolean) {
   if (!progress) return "记录";
+  if (progress.recovery) return "需要重新读取";
   if (progress.phase === "failed") return "操作失败";
   if (progress.phase === "completed") return progress.status === "unavailable" ? "未执行" : progress.status === "failed" ? "未通过" : "已完成";
   if (!active) return "未记录完成";
@@ -22,6 +24,11 @@ function phaseLabel(progress: Progress | undefined, active: boolean) {
 
 export default function ExecutionProgress({ run, events }: { run: ExecutionView; events: ResearchEvent[] }) {
   const [clock, setClock] = useState(() => Date.now());
+  useEffect(() => {
+    if (!["queued", "running", "stopping"].includes(run.status)) return;
+    const timer = window.setInterval(() => setClock(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [run.status]);
   useEffect(() => {
     const deadline = Math.min(...(run.commandApprovals ?? []).map(approval => Date.parse(approval.expiresAt)).filter(time => Number.isFinite(time) && time > clock));
     if (!Number.isFinite(deadline)) return;
@@ -54,16 +61,29 @@ export default function ExecutionProgress({ run, events }: { run: ExecutionView;
       <summary className="cursor-pointer text-sm">执行进度 · {entries.length} 条操作记录</summary>
       <ol aria-label="执行任务进度" className="mt-3 max-h-72 space-y-2 overflow-auto text-xs">{entries.map(({ event, progress }) => {
         const failed = event.type === "execution_failed" || progress?.phase === "failed" || progress?.status === "failed";
-        const hasDetail = Boolean(progress?.paths?.length || progress?.command?.length || progress?.skill || progress?.fileCount !== undefined);
-        return <li key={progress?.operationId ?? event.id} className={`min-w-0 border-l-2 pl-3 ${failed ? "border-red-400" : "border-[#b5cbb6]"}`}>
+        const model = progress?.model;
+        const hasDetail = Boolean(progress?.paths?.length || progress?.command?.length || progress?.skill || progress?.fileCount !== undefined || model);
+        const modelWaiting = active && event.sequence > attemptBoundary && progress?.phase === "waiting" && model;
+        return <li key={progress?.operationId ?? event.id} className={`min-w-0 border-l-2 pl-3 ${failed ? "border-red-400" : progress?.recovery ? "border-amber-400" : "border-[#b5cbb6]"}`}>
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1 leading-6">
             <span className={failed ? "text-red-700" : "muted"}>{phaseLabel(progress, active && event.sequence > attemptBoundary)}</span>
             <time className="muted" dateTime={event.createdAt}>{new Date(event.createdAt).toLocaleTimeString("zh-CN")}</time>
             {typeof progress?.durationMs === "number" && Number.isFinite(progress.durationMs) && progress.durationMs >= 0 && <span className="muted">耗时 {duration(progress.durationMs)}</span>}
           </div>
           <p className="break-words leading-6">{event.message}</p>
+          {model && <p className="muted mt-1 leading-6" aria-label="本轮模型参数">超时 {model.timeoutSeconds ?? "—"} 秒 · 输出上限 {model.maxOutputTokens ?? "服务商默认"}{model.budgetMode === "auto" ? "（自动）" : model.budgetMode === "manual" ? "（自定义）" : ""} · 思考{model.reasoningEffort ? effortLabels[model.reasoningEffort] ?? "服务商默认" : "服务商默认"}</p>}
+          {modelWaiting && <p className="muted leading-6">{model.phase === "headers" ? "接收完整结果" : "等待响应"}已等待 {duration(Math.max(0, clock - Date.parse(event.createdAt)))}</p>}
+          {model?.outputTokens !== undefined && <p className="mt-1 leading-6">本轮输出 {model.outputTokens} token{model.reasoningTokens !== undefined ? `，其中思考 ${model.reasoningTokens} token` : ""}；包括最终文本和工具参数。</p>}
           {hasDetail && <details className="mt-1">
             <summary className="cursor-pointer text-[#48634d]">操作详情</summary>
+            {model && <div aria-label="模型请求详情" className="mt-1 space-y-1 leading-6">
+              <p>协议：{model.apiMode === "responses" ? "Responses API" : "Chat Completions"} · 第 {model.requestNumber} 轮</p>
+              {model.headersDurationMs !== undefined && <p>收到响应头：{duration(model.headersDurationMs)}</p>}
+              {model.inputTokens !== undefined && <p>输入用量：{model.inputTokens} token</p>}
+              {model.requestBytes !== undefined && <p>请求大小：{(model.requestBytes / 1024).toFixed(1)} KiB</p>}
+              {model.httpStatus !== undefined && <p>HTTP 状态：{model.httpStatus}</p>}
+              {model.phase === "failed" && model.outputTokens === undefined && <p>服务商未返回可用的输出用量，不能据此判断是否耗尽预算。</p>}
+            </div>}
             {progress?.skill && <p className="mt-1 break-all">技能：{progress.skill.filename} v{progress.skill.version}</p>}
             {typeof progress?.fileCount === "number" && <p className="mt-1">涉及文件：{progress.fileCount} 个</p>}
             {progress?.paths && <ul aria-label="操作文件" className="mt-1 list-inside list-disc space-y-1">{progress.paths.map((path, index) => <li key={index} className="break-all font-mono">{path}</li>)}</ul>}

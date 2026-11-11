@@ -1,6 +1,8 @@
-# Ubuntu 单机部署
+# Ubuntu 单机部署运维 Runbook
 
-最近发布为 2026-11-11 的 `workspace-agent-20261111-662e5ed`，14 条有效迁移均已应用；部署过程、备份和验收边界见[上线记录](../docs/DEPLOYMENT-20261111.md)。Web 的 Docker 组权限及私有导出路径通过独立 systemd drop-in 配置，更新时保留该文件；现有私有环境配置与加密密钥保持原值。
+本文件记录 ScenarioForge 现有 Ubuntu 实例的实际安装和更新步骤，包含该实例的用户、路径、MySQL 端口、代理镜像、证书和资源限制。它不是通用的一键安装器。为其他团队部署请先阅读[本地与服务器部署使用手册](../docs/DEPLOYMENT_AND_USAGE.md)，并替换、审核所有机器专属值；不得复制现有服务器的私有配置或密钥。
+
+当前实例最新发布为 `workspace-diagnostics-20261111`，BUILD_ID `pn_mYPUK1jdbKzH3JCv4j`；14 条有效迁移均已应用。部署过程、备份和验收边界见[最新上线记录](../docs/DEPLOYMENT-WORKSPACE-DIAGNOSTICS-20261111.md)。Web 的 Docker 组权限及私有导出路径通过独立 systemd drop-in 配置，更新时保留该文件；现有私有环境配置与加密密钥保持原值。
 
 访问地址是 `https://175.27.143.14`。Next.js 和 Python MCP 使用项目目录内的运行时，由 systemd 常驻管理；nginx 使用服务器已经缓存的镜像，仅它监听公网 80/443。Node 只监听回环 3000，MCP 只监听回环 8000，数据库沿用已有 MySQL 3307。所有应用数据放在 MySQL，浏览器只访问网页入口。
 

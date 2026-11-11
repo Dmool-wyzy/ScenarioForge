@@ -1,18 +1,23 @@
 # ScenarioForge
 
+**工作区恢复与安全诊断均已上线：** `请先读取最新文件 README.md。` 现作为可恢复反馈，Agent 重新读取后继续保存；内部异常诊断只记录脱敏类型和代码位置。恢复有上限，旧文件保护保留。部署与回滚见[最新记录](docs/DEPLOYMENT-WORKSPACE-DIAGNOSTICS-20261111.md)和[恢复补修记录](docs/DEPLOYMENT-FILE-RECOVERY-20261111.md)。
+
+**17:47模型执行补修已上线：** 思考强度、自动/自定义输出预算、逐轮用量和明确的截断原因已加入；旧配置保留原思考行为，需选择“自动”、保存并新建任务以采用DeepSeek优先响应策略。验证和回滚见[补修说明](docs/MODEL_EXECUTION_POLICY_20261111.md)。
+
 先研究，再创作的团队项目与 AI 协作工作区。围绕项目研究、成员分工、成果交付与 Git 协作，让团队共同完成工作，也让每位成员看见自己的下一步和贡献积累。
 
-**源码与在线版本：2026-11-11。** 工作区 Agent、本地 Runner、可编辑文档清单及双页签界面已部署至[在线站点](https://175.27.143.14/)。本次发布代码为 `662e5ed`，已应用三条新迁移，生产共 14 条；Linux 回归、独立数据库、真实 Docker 及无模型公网 API 验收通过。详见[本版更新说明](docs/RELEASE_NOTES_20261111.md)和[最新上线记录](docs/DEPLOYMENT-20261111.md)，[2026-11-09 上线记录](docs/DEPLOYMENT-20261109.md)保留供历史追溯。
+**源码与在线版本：2026-11-11。** 工作区 Agent、本地 Runner、可编辑文档清单及双页签界面已部署至[在线站点](https://175.27.143.14/)。最新安全诊断发布标识 `workspace-diagnostics-20261111`，BUILD_ID `pn_mYPUK1jdbKzH3JCv4j`，未新增迁移；此前文件读取恢复 `file-recovery-20261111` 和模型协议补修保留供追溯。详见[版本更新](docs/RELEASE_NOTES_20261111.md)与[最新上线记录](docs/DEPLOYMENT-WORKSPACE-DIAGNOSTICS-20261111.md)。
 
-**当前闭环：** 输入想法 → 预览并确认 1–20 份 Markdown → 生成正文 → 选择文档作为技能 → 手动启动 Agent → 修改本地目录或 GitHub 任务分支 → 验证并审查。清单预览使用本地规则，不调用模型；正文生成才调用模型。技能在任务启动时固定内容和版本，本地命令须逐条审批。最新组合浏览器回归 42/42、另五项集成用例分次通过，方案离线回归 15/15；本机独立 MySQL、生产模式网页与 Runner 联合验收使用 HTTP 模型夹具，独立 Node 测试 5/5。此次上线另通过 Linux 133/133、独立数据库 19/19、真实 Docker 1/1，以及生产 HTTPS 的清单预览和 Runner API 配对/目录/撤销测试。新入口的真实模型 + Docker 全链路、线上 Runner CLI 与实际电脑目录配对、GitHub Agent 完整流程仍待验收；2026-11-10 的真实模型成功记录使用预置技能。详见[方案验收范围](docs/PLAN_WORKFLOW_VALIDATION_20261111.md)与[部署验收边界](docs/DEPLOYMENT-20261111.md)。
+**当前闭环：** 输入想法 → 预览并确认 1–20 份 Markdown → 生成正文 → 选择文档作为技能 → 手动启动 Agent → 修改本地目录或 GitHub 任务分支 → 验证并审查。清单预览使用本地规则，不调用模型；正文生成才调用模型。技能在任务启动时固定内容和版本，本地命令须逐条审批。最新组合浏览器回归 42/42、另五项集成用例分次通过，方案离线回归 15/15；本机独立 MySQL、生产模式网页与 Runner 联合验收使用 HTTP 模型夹具，独立 Node 测试 5/5。此次上线另通过 Linux 133/133、独立数据库 19/19、真实 Docker 1/1，以及生产 HTTPS 的清单预览和 Runner API 配对/目录/撤销测试。之后的真实模型任务已生成工作区文件并通过静态语法检查；最后一次 Docker 命令审批超时，未在该最终快照上运行命令回归。线上 Runner CLI 与实际电脑目录配对、GitHub Agent 完整流程仍待验收。详见[方案验收范围](docs/PLAN_WORKFLOW_VALIDATION_20261111.md)与[部署验收边界](docs/DEPLOYMENT-20261111.md)。
 
 | 想做什么 | 从哪里开始 |
 | --- | --- |
+| 从零部署或邀请朋友使用 | [本地与服务器部署使用手册](docs/DEPLOYMENT_AND_USAGE.md) |
 | 使用网页、生成文档并交给 Agent | [详细使用手册](docs/USER_MANUAL.md) |
 | 让 Agent 修改自己电脑上的目录 | [本地 Runner 安装、配对与审批](docs/LOCAL_RUNNER.md) |
 | 理解执行限制、技能版本和 GitHub 模式 | [工作区 Agent 说明](docs/WORKSPACE_AGENT.md) |
 | 配置模型、数据库与开发服务 | 下方[新成员快速上手](#新成员快速上手)、[环境示例](.env.example)、[开发说明](docs/DEVELOPMENT.md) |
-| 部署到服务器或接续开发 | [Ubuntu 部署](deploy/README.md)、[最新上线记录](docs/DEPLOYMENT-20261111.md)、[交接与待办](docs/HANDOVER.md)、[后续验收](docs/RELEASE_NOTES_20261111.md#部署与后续工作) |
+| 部署到服务器或接续开发 | [部署与使用总手册](docs/DEPLOYMENT_AND_USAGE.md)、[Ubuntu 运维 runbook](deploy/README.md)、[最新上线记录](docs/DEPLOYMENT-WORKSPACE-DIAGNOSTICS-20261111.md)、[交接与待办](docs/HANDOVER.md) |
 
 [方案与文档界面](docs/evidence/workspace-research-20261111.png) · [执行工作区界面](docs/evidence/workspace-execution-20261111.png) · [手机界面](docs/evidence/workspace-mobile-20261111.png)。截图使用模拟资料，不代表真实模型生成质量。
 
@@ -65,7 +70,9 @@ Next.js 16、React 19 和 TypeScript 提供网页与 API；Prisma 管理 MySQL �
 
 配置真实模型与搜索服务后，Agent 可根据目标和参考资料规划研究、整理证据并生成中文 Markdown。默认 `SEARCH_PROVIDER=mock`、`RAG_ENABLED=false`；Mock 来源不能作为真实证据，Embedding 需要单独配置。账号、项目、个人资料与贡献管理不依赖真实模型调用。
 
-部署说明见 [Ubuntu 部署](deploy/README.md)。网页使用者直接访问站点即可；开发者按下文准备独立环境。已有服务器的 Windows 开发连接方式另见 [本地开发说明](docs/LOCAL_DEVELOPMENT.md)，该文档描述的共享数据库配置不应作为新开发者的默认测试环境。
+最新补修已上线，将模型测试拆为「基础连接 / 工具调用 / 结构化输出」，各项分别测试、不会自动切换协议；连接通过不代表方案生成可用。官方 DeepSeek Chat 不支持当前方案所需的严格 JSON Schema，应手动选择并验证支持该能力的接口。服务器独立环境的 DeepSeek Responses 三项真实小请求均通过；真实模型任务也已生成工作区文件，完整协议能力和代表性研究质量仍需按具体服务商继续验收。详情见[模型能力检查](docs/USER_MANUAL.md#分别检查模型接口能力)及[专项验收](docs/MODEL_PROTOCOL_VALIDATION_20261111.md)。
+
+部署与新用户操作入口见[本地与服务器部署使用手册](docs/DEPLOYMENT_AND_USAGE.md)。网页使用者直接访问站点即可；开发者按下文准备独立环境。已有服务器的 Windows 生产数据库连接方式仅供历史维护参考，见[本地开发说明](docs/LOCAL_DEVELOPMENT.md)，不要把它作为新开发者的默认测试环境。
 
 ## 新成员快速上手
 
@@ -281,6 +288,8 @@ npm run dev
 | `OPENAI_BASE_URL` | 默认 `https://api.openai.com/v1`，支持兼容中转站；填写纯 URL |
 | `OPENAI_API_MODE` | `responses` 或 `chat_completions`，Next.js 与 Python 使用相同配置 |
 | `MODEL_TIMEOUT_SECONDS` | Node.js 与 Python 模型请求超时，默认 120 秒，范围 10–300；Node 建连使用同一上限；超时/HTTP 错误不自动重试 |
+| `MODEL_REASONING_EFFORT` | Node模型思考策略：auto/default/none/low/medium/high/max；auto对官方DeepSeek关闭思考，其他服务商保留默认；前端项目/个人配置优先 |
+| `MODEL_MAX_OUTPUT_TOKENS` | Node单次输出上限512–65536（含思考）；留空使用任务自动预算；前端保存配置优先，模型限制仍适用 |
 | `SCENARIOFORGE_MODEL` | 所有业务模型调用的模型名；真实研究前须填写服务商实际支持的名称 |
 | `SEARCH_PROVIDER` | `mock`（默认）、`searxng`、`ddgs` 或 `tavily` |
 | `SEARXNG_URL` | SearXNG 服务地址，仅 searxng 需要 |
@@ -449,26 +458,12 @@ npm run check:agent
 
 真实研究需要可用的模型凭据，以及一个可用的真实搜索 Provider；只有选择 tavily 时才需要 Tavily key。夹具测试使用正式 Mock Provider 验证调用链路和状态协调，不能验证服务商的模型可用性或真实研究质量。`check:integration` 预期连接以 mock 启动的 Next.js；`check:agent` 在隔离环境中强制使用 mock，不依赖本机搜索配置。
 
-当前双页签浏览器组合回归为 `tests/plan-workflow.spec.ts`、`tests/conversation.spec.ts` 和 `tests/agent-workspace.spec.ts`，共 42/42；另五项集成用例分次通过。上传前十组离线回归合并复核 133/133（含子测试，包含方案 15 项），使用本机夹具，无真实模型调用。部署前同组在服务器 Linux 上通过 133/133，另有独立数据库 19/19 和真实 Docker 1/1；不是与 Windows 数量相加后的独立用例总数。本机独立 MySQL + 生产模式网页 + 真实 Runner 验证三份文档生成、版本冻结、文件落盘及审查，独立可信 Node 测试 5/5。上线后另验证无模型文档预览、HTTPS Runner API 配对/目录/撤销，测试数据均已清理。原始 `.tmp/` 日志和测试数据不随源码分发，可公开范围见[本版说明](docs/RELEASE_NOTES_20261111.md)、[方案流程验收报告](docs/PLAN_WORKFLOW_VALIDATION_20261111.md)和[上线记录](docs/DEPLOYMENT-20261111.md)。新入口真实模型 + Docker、线上 Runner CLI 与实际电脑目录、GitHub Agent 完整流程和真实 RAG 质量仍待验收；此次没有进行线上浏览器布局交互验收。
+当前双页签浏览器组合回归为 `tests/plan-workflow.spec.ts`、`tests/conversation.spec.ts` 和 `tests/agent-workspace.spec.ts`，共 42/42；另五项集成用例分次通过。上传前十组离线回归合并复核 133/133（含子测试，包含方案 15 项），使用本机夹具，无真实模型调用。部署前同组在服务器 Linux 上通过 133/133，另有独立数据库 19/19 和真实 Docker 1/1；不是与 Windows 数量相加后的独立用例总数。本机独立 MySQL + 生产模式网页 + 真实 Runner 验证三份文档生成、版本冻结、文件落盘及审查，独立可信 Node 测试 5/5。上线后另验证无模型文档预览、HTTPS Runner API 配对/目录/撤销，测试数据均已清理。之后的真实模型任务已生成工作区文件并通过静态语法检查；最后一次 Docker 命令审批超时，未在该最终快照运行命令回归。线上 Runner CLI 与实际电脑目录、GitHub Agent 完整流程和真实 RAG 质量仍待验收。原始 `.tmp/` 日志和测试数据不随源码分发，可公开范围见[版本说明](docs/RELEASE_NOTES_20261111.md)、[方案流程验收报告](docs/PLAN_WORKFLOW_VALIDATION_20261111.md)和[最新上线记录](docs/DEPLOYMENT-WORKSPACE-DIAGNOSTICS-20261111.md)。正式文档按用途分组见[文档目录](docs/README.md)。
 
 ## 文档
 
-- [详细使用手册](docs/USER_MANUAL.md)
-- [2026-11-11 版本说明与后续验收](docs/RELEASE_NOTES_20261111.md)
-- [2026-11-11 最新上线记录](docs/DEPLOYMENT-20261111.md)
-- [本地 Runner 安装与配对](docs/LOCAL_RUNNER.md)
-- [工作区 Agent 与执行边界](docs/WORKSPACE_AGENT.md)
-- [2026-11-11 方案生成与交接验收](docs/PLAN_WORKFLOW_VALIDATION_20261111.md)
-- [2026-11-09 版本说明](docs/RELEASE_NOTES_20261109.md)
-- [2026-11-09 上线记录](docs/DEPLOYMENT-20261109.md)
-- [我的下一步与排序规则](docs/MY_NEXT_STEP.md)
-- [个人中心](docs/PERSONAL_CENTER.md)
-- [贡献记录与七级成长体系](docs/CONTRIBUTIONS.md)
-- [Git 工作区功能与边界](docs/REPOSITORY_WORKSPACE.md)
-- [已有内容与私有仓库导入](docs/REPOSITORY_IMPORT.md)
-- [研究文档生成修复](docs/RESEARCH_GENERATION_FIX.md)
-- [三个示例输入](docs/EXAMPLES.md)
-- [演示脚本](docs/DEMO.md)
-- [实现与开发说明](docs/DEVELOPMENT.md)
-- [Ubuntu 服务器部署](deploy/README.md)
-- [阶段交付与验收记录](docs/VALIDATION.md)
+- [文档目录与分类](docs/README.md)
+- [本地与服务器部署使用手册](docs/DEPLOYMENT_AND_USAGE.md)
+- [产品详细使用手册](docs/USER_MANUAL.md)
+- [Ubuntu 部署运维 Runbook](deploy/README.md)
+- [当前版本交付与待办](docs/HANDOVER.md)

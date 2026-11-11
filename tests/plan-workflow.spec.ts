@@ -35,7 +35,7 @@ function execution(id: string, request: string, skills: SkillDescription[], stat
     head: "b".repeat(40), attempts: 1, skills: structuredClone(skills), summary: null, error: null, verification: [], createdAt: now };
 }
 
-async function planPage(page: Page, options: { savedVersion?: number; executions?: ExecutionView[]; extraEvents?: ResearchEvent[]; generateError?: string; refreshableStream?: boolean } = {}) {
+async function planPage(page: Page, options: { savedVersion?: number; executions?: ExecutionView[]; extraEvents?: ResearchEvent[]; generateError?: string; queuedGeneration?: boolean; refreshableStream?: boolean } = {}) {
   const snapshot: ResearchSnapshot = { id: packageId, title: "加法模块方案", goal, status: "replied", taskState: "idle", currentStage: 0,
     summary: "已讨论目标，可以整理为执行方案。", filePlan: [], files: [], evidence: [], clarifications: [],
     events: [researchEvent(1, "user_message", goal), researchEvent(2, "assistant_message", "已讨论目标，可以整理为执行方案。"), researchEvent(3, "turn_completed", "普通对话已完成")] };
@@ -46,7 +46,7 @@ async function planPage(page: Page, options: { savedVersion?: number; executions
   const unexpected: string[] = [];
   let proposalNumber = 0;
   let proposal: Proposal | null = null;
-  let snapshotUpdatePending = false;
+  let snapshotUpdatePending: string | null = null;
   let downloads = 0;
   let runs = options.executions ?? [];
   const prepareDocuments = (request: string) => {
@@ -68,6 +68,14 @@ async function planPage(page: Page, options: { savedVersion?: number; executions
     snapshot.summary = "方案文档已保存，可以选择技能继续执行。";
     const sequence = snapshot.events.length;
     snapshot.events.push(researchEvent(sequence + 1, "documents_started", "方案文档正在整理"), researchEvent(sequence + 2, "documents_completed", "方案文档已保存"));
+  };
+  const failDocuments = (message: string) => {
+    snapshot.status = "documents_failed";
+    snapshot.taskState = "idle";
+    snapshot.documentProposal = null;
+    proposal = null;
+    snapshot.events.push(researchEvent(snapshot.events.length + 1, "documents_failed", message));
+    snapshotUpdatePending = "documents_failed";
   };
   if (options.savedVersion) saveDocuments(options.savedVersion);
   snapshot.events.push(...(options.extraEvents ?? []));
@@ -97,12 +105,20 @@ async function planPage(page: Page, options: { savedVersion?: number; executions
       if (body.action === "preview") return route.fulfill({ json: { proposal: prepareDocuments(body.request || goal) } });
       if (body.action !== "generate" || body.proposalId !== proposal?.id) return route.fulfill({ status: 409, json: { error: "文档清单已变化，请重新预览。" } });
       if (options.generateError) return route.fulfill({ status: 409, json: { error: options.generateError } });
+      if (options.queuedGeneration) {
+        snapshot.status = "drafting_documents";
+        snapshot.taskState = "running";
+        snapshot.documentProposal = null;
+        proposal = null;
+        snapshot.events.push(researchEvent(snapshot.events.length + 1, "documents_started", "方案文档正在整理"));
+        return route.fulfill({ status: 202, json: { status: "queued" } });
+      }
       saveDocuments((options.savedVersion ?? 0) + 1, body.documents);
       return route.fulfill({ status: 202, json: { status: "queued" } });
     }
     if (path.endsWith("/stream")) {
-      const body = options.refreshableStream ? `retry: 100\n\n${snapshotUpdatePending ? "event: file_updated\ndata: {}\n\n" : ": fixture\n\n"}` : ": fixture\n\n";
-      snapshotUpdatePending = false;
+      const body = options.refreshableStream ? `retry: 100\n\n${snapshotUpdatePending ? `event: ${snapshotUpdatePending}\ndata: {}\n\n` : ": fixture\n\n"}` : ": fixture\n\n";
+      snapshotUpdatePending = null;
       return route.fulfill({ contentType: "text/event-stream", body });
     }
     if (path.includes("/files/") && route.request().method() === "PATCH") {
@@ -130,7 +146,7 @@ async function planPage(page: Page, options: { savedVersion?: number; executions
     unexpected.push(`${route.request().method()} ${path}`);
     return route.fulfill({ status: 404, json: { error: "Unexpected fixture API route" } });
   });
-  return { snapshot, requests, documentRequests, fileActions, creations, unexpected, notifySnapshotUpdate: () => { snapshotUpdatePending = true; }, downloads: () => downloads };
+  return { snapshot, requests, documentRequests, fileActions, creations, unexpected, failDocuments, notifySnapshotUpdate: () => { snapshotUpdatePending = "file_updated"; }, downloads: () => downloads };
 }
 
 async function screenshotDirectory() {
@@ -138,6 +154,72 @@ async function screenshotDirectory() {
   await mkdir(directory, { recursive: true });
   return directory;
 }
+
+test("文档生成失败在文档区展示原因，刷新后保留失败提示与展开进度", async ({ page }) => {
+  const fixture = await planPage(page);
+  const reason = "模型服务返回错误（HTTP 400），本轮已停止，未自动重试。";
+  fixture.failDocuments(reason);
+  await page.goto(`/?project=${projectId}&package=${packageId}`);
+  const documents = page.getByRole("region", { name: "研究文档", exact: true });
+  const failure = documents.getByRole("alert");
+  await expect(failure.getByRole("heading", { name: "文档生成失败", exact: true })).toBeVisible();
+  await expect(failure).toContainText(reason);
+  await expect(failure).toContainText("本次未保存文档");
+  await expect(documents.getByText("还没有保存的方案文档", { exact: true })).toHaveCount(0);
+  await expect(documents.getByText("文档正在生成", { exact: true })).toHaveCount(0);
+  await expect(page.locator("details").filter({ has: page.locator("#research-progress") })).toHaveAttribute("open", "");
+  await expect(page.locator("#research-progress")).toContainText(reason);
+  await expect(documents.getByRole("button", { name: "↓ 全部 ZIP", exact: true })).toBeDisabled();
+  await page.reload();
+  await expect(failure).toContainText(reason);
+  expect(fixture.documentRequests).toHaveLength(0);
+  expect(fixture.requests).toHaveLength(0);
+  expect(fixture.snapshot.files).toHaveLength(0);
+  expect(fixture.unexpected).toEqual([]);
+});
+
+test("排队后的异步失败通过 SSE 展示，仅手动重新规划后回到确认清单", async ({ page }) => {
+  const fixture = await planPage(page, { queuedGeneration: true, refreshableStream: true });
+  await page.goto(`/?project=${projectId}&package=${packageId}`);
+  await page.getByRole("button", { name: "预览文档清单", exact: true }).click();
+  await page.getByRole("button", { name: "确认并生成 2 份文档", exact: true }).click();
+  await expect.poll(() => fixture.documentRequests.length).toBe(2);
+  await expect(page.locator("#research-progress")).toContainText("Agent 正在处理");
+  const reason = "当前接口不支持文档所需的结构化输出，请检查模型 API 设置。";
+  fixture.failDocuments(reason);
+  const documents = page.getByRole("region", { name: "研究文档", exact: true });
+  await expect(documents.getByRole("alert")).toContainText(reason);
+  await expect(page.locator("#research-progress")).toBeVisible();
+  expect(fixture.documentRequests.filter(request => request.action === "generate")).toHaveLength(1);
+  await documents.getByRole("button", { name: "重新规划文档", exact: true }).click();
+  await expect(page.getByRole("region", { name: "确认文档清单", exact: true })).toBeVisible();
+  await expect(documents.getByRole("alert")).toHaveCount(0);
+  expect(fixture.documentRequests.filter(request => request.action === "preview")).toHaveLength(2);
+  expect(fixture.documentRequests.filter(request => request.action === "generate")).toHaveLength(1);
+  expect(fixture.snapshot.files).toHaveLength(0);
+  expect(fixture.requests).toHaveLength(0);
+  expect(fixture.unexpected).toEqual([]);
+});
+
+test("重新生成失败仍可浏览旧文档，明确旧版本未更新且不自动交接执行", async ({ page }) => {
+  const fixture = await planPage(page, { savedVersion: 3 });
+  const savedFiles = structuredClone(fixture.snapshot.files);
+  fixture.failDocuments("模型服务响应超时，本轮已停止，未自动重试。");
+  await page.goto(`/?project=${projectId}&package=${packageId}`);
+  const documents = page.getByRole("region", { name: "研究文档", exact: true });
+  await expect(documents.getByRole("alert")).toContainText("下方 2 份文档仍为之前保存的版本");
+  await expect(documents.getByText("检查已保存的文档，再继续执行", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "加法模块实施方案", exact: true })).toBeVisible();
+  await page.getByRole("tab", { name: /TASKS\.md/ }).click();
+  await expect(page.getByRole("heading", { name: "验收清单", exact: true })).toBeVisible();
+  await expect(documents.getByRole("alert")).toBeVisible();
+  await expect(documents.getByRole("button", { name: "↓ 全部 ZIP", exact: true })).toBeEnabled();
+  expect(fixture.snapshot.files).toEqual(savedFiles);
+  expect(fixture.documentRequests).toHaveLength(0);
+  expect(fixture.requests).toHaveLength(0);
+  expect(fixture.downloads()).toBe(0);
+  expect(fixture.unexpected).toEqual([]);
+});
 
 test("已有对话先确认文档清单，保存正文后显式交接技能并手动执行", async ({ page }) => {
   const fixture = await planPage(page);
@@ -528,6 +610,34 @@ test("执行页可通过地址恢复，文件与研究深链优先打开方案�
   await expect(page.getByRole("region", { name: "研究与对话", exact: true })).toBeVisible();
   expect(fixture.requests).toHaveLength(0);
   expect(fixture.documentRequests).toHaveLength(0);
+});
+
+test("执行记录展示真实模型预算、响应阶段和截断用量，恢复轮次互不覆盖", async ({ page }) => {
+  const run = { ...execution("model-budget-progress", goal, [], "failed"), attempts: 2, error: "模型输出达到本轮 token 上限而被截断。" };
+  const base = { requestNumber: 3, apiMode: "responses", timeoutSeconds: 300, maxOutputTokens: 16384, reasoningEffort: "none", budgetMode: "auto" };
+  const fixture = await planPage(page, { savedVersion: 1, executions: [run], extraEvents: [
+    researchEvent(20, "execution_progress", "第一尝试：等待模型服务响应", { executionId: run.id, progress: { operationId: "attempt-one-3", action: "model_request", phase: "waiting", model: { ...base, phase: "started" } } }),
+    researchEvent(21, "execution_progress", "第一尝试：已收到响应头，等待完整结果", { executionId: run.id, progress: { operationId: "attempt-one-3", action: "model_request", phase: "waiting", model: { ...base, phase: "headers", headersDurationMs: 120 } } }),
+    researchEvent(22, "execution_progress", "第一尝试：输出预算耗尽", { executionId: run.id, progress: { operationId: "attempt-one-3", action: "model_request", phase: "failed", durationMs: 123000, model: { ...base, phase: "failed", headersDurationMs: 120, httpStatus: 200, inputTokens: 1000, outputTokens: 16384, reasoningTokens: 0, failureKind: "incomplete", incompleteReason: "max_output_tokens" } } }),
+    researchEvent(23, "execution_progress", "第二尝试：模型返回未完成结果", { executionId: run.id, progress: { operationId: "attempt-two-3", action: "model_request", phase: "failed", durationMs: 12000, model: { ...base, phase: "failed", incompleteReason: "unknown" } } }),
+  ] });
+  await page.goto(`/?project=${projectId}&package=${packageId}&workspace=execution`);
+  const panel = page.getByRole("region", { name: "Agent 执行工作区", exact: true });
+  await panel.getByRole("radio", { name: "本地工作区", exact: true }).check();
+  const timeline = panel.getByRole("list", { name: "执行任务进度" });
+  await panel.locator("summary").filter({ hasText: /^执行进度 ·/ }).click();
+  const first = timeline.getByRole("listitem").filter({ hasText: "第一尝试：输出预算耗尽" });
+  const second = timeline.getByRole("listitem").filter({ hasText: "第二尝试：模型返回未完成结果" });
+  await expect(first).toHaveCount(1); await expect(second).toHaveCount(1);
+  await expect(timeline).not.toContainText("第一尝试：等待模型服务响应");
+  await expect(first.getByLabel("本轮模型参数")).toHaveText("超时 300 秒 · 输出上限 16384（自动） · 思考关闭");
+  await expect(first).toContainText("本轮输出 16384 token，其中思考 0 token");
+  await first.getByText("操作详情", { exact: true }).click();
+  await expect(first.getByLabel("模型请求详情")).toContainText("HTTP 状态：200");
+  await expect(first.getByLabel("模型请求详情")).toContainText("收到响应头：120 毫秒");
+  await second.getByText("操作详情", { exact: true }).click();
+  await expect(second).toContainText("服务商未返回可用的输出用量");
+  expect(fixture.requests).toHaveLength(0); expect(fixture.documentRequests).toHaveLength(0); expect(fixture.unexpected).toEqual([]);
 });
 
 test("双页签桌面与手机截图，当前任务展开且历史默认收起，页面不横向溢出", async ({ page }) => {

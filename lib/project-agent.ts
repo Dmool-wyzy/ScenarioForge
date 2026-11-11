@@ -2,6 +2,7 @@ import "server-only";
 import { Agent, Runner, tool, type Model, type ModelSettings } from "@openai/agents";
 import { z } from "zod";
 import { modelProviderData, packageResearchConfig } from "./model-settings";
+import { modelPolicyFromConfig, resolveModelOutputTokens } from "./model-policy";
 import { createModelProvider } from "./openai";
 import { DatabaseSession } from "./sessions";
 import { getContext } from "./research";
@@ -22,7 +23,7 @@ export function createProjectAgent(model: string | Model, settings: ModelSetting
   let delegationRun: Promise<string> | undefined;
   return new Agent({
     name: "ScenarioForge Project Agent", model, instructions: PROJECT_AGENT_INSTRUCTIONS + (delegate ? "\n当前提供 delegate_tasks，可在预算内派发团队子任务并审核返回结果。" : "\n当前未提供 delegate_tasks，不得声称已派发下游任务。"),
-    modelSettings: { ...settings, maxTokens: PROJECT_AGENT_BUDGET.maxOutputTokens, parallelToolCalls: false, retry: { maxRetries: 0 } },
+    modelSettings: { ...settings, maxTokens: settings.maxTokens ?? PROJECT_AGENT_BUDGET.maxOutputTokens, parallelToolCalls: false, retry: { maxRetries: 0 } },
     tools: [...(researchAllowed ? [tool({
       name: "run_research",
       description: "Research or update the current Markdown workspace only when requested. Pass the full current task, including relevant user constraints. Existing plans are reused; a different research topic needs a new conversation. Does not run while clarification or editing is blocked.",
@@ -70,7 +71,8 @@ export async function runProjectAgent(packageId: string, message: string, signal
     : undefined;
   let usedResearch = false;
   const agent = createProjectAgent(env.SCENARIOFORGE_MODEL, {
-    providerData: modelProviderData({ baseUrl: env.OPENAI_BASE_URL, apiMode: env.OPENAI_API_MODE }),
+    providerData: modelProviderData(modelPolicyFromConfig(env)),
+    maxTokens: resolveModelOutputTokens(modelPolicyFromConfig(env), PROJECT_AGENT_BUDGET.maxOutputTokens),
   }, async request => {
     if (!await prepareResearchTurn(packageId, request)) return "研究仍在等待澄清答案或文件解锁。可以继续聊天；请先在澄清卡片提交答案，或保存/取消编辑，再继续研究。";
     usedResearch = true;

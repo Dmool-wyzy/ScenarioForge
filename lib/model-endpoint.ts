@@ -57,7 +57,7 @@ export function modelTransport(baseUrl: string, timeout: number, pinnedAddress?:
   });
 }
 
-export function modelFetch(transport: Agent, baseUrl: string, options: { preserveStreamingResponse?: boolean } = {}): typeof globalThis.fetch {
+export function modelFetch(transport: Agent, baseUrl: string, options: { preserveStreamingResponse?: boolean; deferResponseBody?: boolean } = {}): typeof globalThis.fetch {
   const origin = new URL(baseUrl).origin;
   return async (input, init) => {
     const value = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
@@ -72,7 +72,9 @@ export function modelFetch(transport: Agent, baseUrl: string, options: { preserv
       await response.body?.cancel();
       throw new ApiError(502, "模型接口未遵守响应编码要求，请检查网关配置。");
     }
-    if (streaming) return response;
+    // The model-response wrapper can own bounded body reads and measure the
+    // interval between receiving headers and the complete response.
+    if (streaming || options.deferResponseBody) return response;
     const parts: Uint8Array[] = [];
     let bytes = 0;
     const reader = response.body?.getReader();

@@ -7,6 +7,7 @@ import { documentSelectionSchema } from "@/lib/document-proposal";
 import { startTaskScheduler } from "@/lib/tasks";
 import { assertSameOrigin, readJson } from "@/lib/validation";
 import { errorResponse } from "@/lib/errors";
+import { assertStructuredOutputSupported } from "@/lib/model-capabilities";
 
 export const runtime = "nodejs";
 const documentAction = z.union([
@@ -24,7 +25,10 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     }
     rateLimit(`plan-documents:${user.id}`, 10, 60 * 60_000);
     const pkg = await getResearch(id);
-    if (pkg.projectId) await projectResearchConfig(pkg.projectId);
+    if (pkg.projectId) {
+      const config = await projectResearchConfig(pkg.projectId);
+      assertStructuredOutputSupported({ baseUrl: config.OPENAI_BASE_URL, apiMode: config.OPENAI_API_MODE });
+    }
     const result = await confirmDocumentProposal(id, input.proposalId, input.documents, user.id);
     startTaskScheduler();
     return Response.json(result, { status: 202, headers: { "Cache-Control": "no-store" } });

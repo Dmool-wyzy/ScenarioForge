@@ -7,14 +7,17 @@ import { test, type TestContext } from "node:test";
 import { gzipSync } from "node:zlib";
 import { Agent, MockAgent } from "undici";
 import { ApiError } from "../lib/errors";
-import { encryptModelSettings, decryptModelSettings, encryptPersonalAgentSettings, decryptPersonalAgentSettings, settingsMetadata, modelProviderData, modelSettingsSchema, type ModelSettings } from "../lib/model-settings";
+import { encryptModelSettings, decryptModelSettings, encryptPersonalAgentSettings, decryptPersonalAgentSettings, personalAgentSettingsMetadata, settingsMetadata, modelProviderData, modelSettingsSchema, type ModelSettings } from "../lib/model-settings";
 import { modelBaseUrl, modelAddress, modelTransport, modelFetch } from "../lib/model-endpoint";
-import { testModelConnection } from "../lib/model-test";
-import { Agent as ResearchAgent, Runner } from "@openai/agents";
+import { modelTestRequestSchema, testModelConnection, type ModelTestKind } from "../lib/model-test";
+import { assertStructuredOutputSupported } from "../lib/model-capabilities";
+import { z } from "zod";
+import { Agent as ResearchAgent, Runner, tool } from "@openai/agents";
 import { createModelProvider } from "../lib/openai";
 import { getResearchConfig } from "../lib/env";
+import { modelPolicyFromConfig, probeOutputTokenLimit, REASONING_EFFORTS, resolveModelOutputTokens, resolveReasoningEffort, type ModelPolicySettings } from "../lib/model-policy";
 
-const fixture: ModelSettings = { baseUrl: "https://model-fixture.example/v1", model: "fixture-model", apiMode: "responses", timeoutSeconds: 30, deepseekSearchEnabled: false, apiKey: "fixture-key-not-a-real-provider-secret" };
+const fixture: ModelSettings = { baseUrl: "https://model-fixture.example/v1", model: "fixture-model", apiMode: "responses", timeoutSeconds: 30, reasoningEffort: "auto", maxOutputTokens: null, deepseekSearchEnabled: false, apiKey: "fixture-key-not-a-real-provider-secret" };
 
 function responsesReply(output: Record<string, unknown>[]) {
   return { id: "resp-fixture", object: "response", created_at: 0, model: fixture.model, status: "completed", output };
@@ -41,7 +44,7 @@ test("model settings use randomized authenticated encryption bound to one projec
       assert.throws(() => decryptModelSettings("project-a", parts.join(".")), error => error instanceof ApiError && error.status === 503);
     }
     const metadata = settingsMetadata(fixture)!;
-    assert.deepEqual(Object.keys(metadata).sort(), ["apiMode", "baseUrl", "deepseekSearchEnabled", "hasApiKey", "model", "timeoutSeconds"].sort());
+    assert.deepEqual(Object.keys(metadata).sort(), ["apiMode", "baseUrl", "deepseekSearchEnabled", "hasApiKey", "model", "timeoutSeconds", "reasoningEffort", "maxOutputTokens"].sort());
     assert.ok(!JSON.stringify(metadata).includes(fixture.apiKey.slice(-8)));
     process.env.SCENARIOFORGE_SETTINGS_KEY = randomBytes(32).toString("base64");
     assert.throws(() => decryptModelSettings("project-a", encrypted), error => error instanceof ApiError && error.status === 503);
@@ -75,6 +78,74 @@ test("DeepSeek Search defaults off for old settings and only accepts the officia
   assert.equal(modelSettingsSchema.parse(oldSettings).deepseekSearchEnabled, false);
   assert.equal(modelSettingsSchema.parse({ ...fixture, baseUrl: "https://api.deepseek.com/v1", deepseekSearchEnabled: true }).deepseekSearchEnabled, true);
   assert.throws(() => modelSettingsSchema.parse({ ...fixture, deepseekSearchEnabled: true }), /api\.deepseek\.com/);
+});
+
+test("model policy defaults preserve old encrypted settings and validate explicit limits", () => {
+  const oldSettings: ModelSettings = { ...fixture };
+  delete oldSettings.reasoningEffort;
+  delete oldSettings.maxOutputTokens;
+  assert.deepEqual(modelSettingsSchema.parse(oldSettings), fixture);
+  for (const reasoningEffort of REASONING_EFFORTS) assert.equal(modelSettingsSchema.parse({ ...fixture, reasoningEffort }).reasoningEffort, reasoningEffort);
+  for (const maxOutputTokens of [512, 65536, null]) assert.equal(modelSettingsSchema.parse({ ...fixture, maxOutputTokens }).maxOutputTokens, maxOutputTokens);
+  for (const maxOutputTokens of [0, 511, 65537, 1024.5, "8192"]) assert.equal(modelSettingsSchema.safeParse({ ...fixture, maxOutputTokens }).success, false);
+  assert.equal(modelSettingsSchema.safeParse({ ...fixture, reasoningEffort: "unknown" }).success, false);
+  for (const apiMode of ["responses", "chat_completions"] as const) {
+    assert.equal(modelSettingsSchema.safeParse({ ...fixture, baseUrl: "https://api.deepseek.com", apiMode, reasoningEffort: "medium" }).success, false);
+  }
+  const original = process.env.SCENARIOFORGE_SETTINGS_KEY;
+  process.env.SCENARIOFORGE_SETTINGS_KEY = randomBytes(32).toString("base64");
+  try {
+    assert.deepEqual(decryptModelSettings("legacy", encryptModelSettings("legacy", oldSettings)), { ...fixture, reasoningEffort: "default" });
+    for (const apiMode of ["responses", "chat_completions"] as const) {
+      const legacyDeepseek = { ...oldSettings, baseUrl: "https://api.deepseek.com", apiMode };
+      const restored = decryptModelSettings("legacy", encryptModelSettings("legacy", legacyDeepseek));
+      assert.equal(restored.reasoningEffort, apiMode === "responses" ? "default" : "none", "Legacy executions keep their original thinking policy");
+      assert.equal(restored.maxOutputTokens, null);
+    }
+    const chosen: ModelSettings = { ...fixture, reasoningEffort: "high", maxOutputTokens: 24576 };
+    assert.deepEqual(decryptModelSettings("chosen", encryptModelSettings("chosen", chosen)), chosen);
+    assert.equal(settingsMetadata(chosen)?.reasoningEffort, "high");
+    assert.equal(personalAgentSettingsMetadata(chosen)?.maxOutputTokens, 24576);
+  } finally {
+    if (original === undefined) delete process.env.SCENARIOFORGE_SETTINGS_KEY;
+    else process.env.SCENARIOFORGE_SETTINGS_KEY = original;
+  }
+});
+
+test("reasoning policies keep the selected protocol and reserve output space for thinking", () => {
+  const deepseek = { ...fixture, baseUrl: "https://api.deepseek.com" };
+  assert.deepEqual(modelProviderData(deepseek), { reasoning: { effort: "none" } });
+  assert.deepEqual(modelProviderData({ ...deepseek, reasoningEffort: "default" }), {});
+  assert.deepEqual(modelProviderData(fixture), {});
+  assert.deepEqual(modelProviderData({ ...fixture, reasoningEffort: "default" }), {});
+  assert.deepEqual(modelProviderData({ ...fixture, reasoningEffort: "high" }), { reasoning: { effort: "high" } });
+  assert.deepEqual(modelProviderData({ ...fixture, apiMode: "chat_completions", reasoningEffort: "low" }), { reasoning_effort: "low" });
+  assert.deepEqual(modelProviderData({ ...deepseek, apiMode: "chat_completions", reasoningEffort: "none" }), { thinking: { type: "disabled" } });
+  assert.deepEqual(modelProviderData({ ...deepseek, apiMode: "chat_completions", reasoningEffort: "max" }), { thinking: { type: "enabled" }, reasoning_effort: "max" });
+  assert.equal(resolveReasoningEffort({ ...deepseek, baseUrl: "https://api.deepseek.com.evil.example" }), undefined);
+  assert.throws(() => modelProviderData({ ...deepseek, reasoningEffort: "medium" }), /独立.*中等/);
+  for (const [reasoningEffort, expected] of [["auto", 2048], ["default", 2048], ["none", 2048], ["low", 8192], ["medium", 16384], ["high", 32768], ["max", 32768]] as const) {
+    assert.equal(resolveModelOutputTokens({ ...fixture, reasoningEffort }, 2048), expected);
+    assert.equal(resolveModelOutputTokens({ ...fixture, reasoningEffort, maxOutputTokens: 1024 }, 2048), 1024, "An explicit cap must not be silently increased");
+  }
+  assert.equal(resolveModelOutputTokens(deepseek, 2048), 2048);
+  assert.equal(resolveModelOutputTokens({ ...deepseek, reasoningEffort: "default" }, 2048), 32768);
+  assert.equal(resolveModelOutputTokens({ ...fixture, reasoningEffort: "high" }, 49152), 49152);
+  assert.throws(() => resolveModelOutputTokens({ ...fixture, maxOutputTokens: 511 }, 8192));
+  for (const [reasoningEffort, expected] of [["none", 512], ["low", 2048], ["medium", 4096], ["high", 8192], ["max", 16384]] as const) assert.equal(probeOutputTokenLimit({ ...fixture, reasoningEffort }), expected);
+  assert.equal(probeOutputTokenLimit(fixture), 8192, "An unspecified provider default may include thinking; the probe must not assume it is disabled");
+  assert.equal(probeOutputTokenLimit({ ...deepseek, reasoningEffort: "default" }), 8192);
+  assert.equal(probeOutputTokenLimit({ ...deepseek, reasoningEffort: "high", maxOutputTokens: 1024 }), 1024);
+});
+
+test("environment policies normalize blanks and carry explicit thinking and output caps", () => {
+  const values = { OPENAI_API_KEY: fixture.apiKey, OPENAI_BASE_URL: fixture.baseUrl, OPENAI_API_MODE: fixture.apiMode, SCENARIOFORGE_MODEL: fixture.model, SCENARIOFORGE_INTERNAL_TOKEN: "fixture-token-".repeat(3) };
+  const env = getResearchConfig({ ...values, MODEL_REASONING_EFFORT: "high", MODEL_MAX_OUTPUT_TOKENS: "24576" });
+  assert.deepEqual(modelPolicyFromConfig(env), { baseUrl: fixture.baseUrl, apiMode: fixture.apiMode, reasoningEffort: "high", maxOutputTokens: 24576 });
+  const automatic = getResearchConfig({ ...values, MODEL_REASONING_EFFORT: "", MODEL_MAX_OUTPUT_TOKENS: "" });
+  assert.deepEqual(modelPolicyFromConfig(automatic), { baseUrl: fixture.baseUrl, apiMode: fixture.apiMode, reasoningEffort: "auto", maxOutputTokens: null });
+  assert.throws(() => getResearchConfig({ ...values, MODEL_MAX_OUTPUT_TOKENS: "511" }), /MODEL_MAX_OUTPUT_TOKENS/);
+  assert.throws(() => getResearchConfig({ ...values, OPENAI_BASE_URL: "https://api.deepseek.com", MODEL_REASONING_EFFORT: "medium" }), /MODEL_REASONING_EFFORT/);
 });
 
 test("model API URLs reject unsafe syntax, private destinations and mixed DNS answers", async t => {
@@ -149,7 +220,7 @@ test("the transport lookup pins the validated address and rejects other hosts or
   }
 });
 
-async function mockedProbe(t: TestContext, apiMode: ModelSettings["apiMode"], status: number, reply: object | string | Buffer, headers: Record<string, string> = {}, baseUrl = fixture.baseUrl) {
+async function mockedProbe(t: TestContext, apiMode: ModelSettings["apiMode"], status: number, reply: object | string | Buffer, headers: Record<string, string> = {}, baseUrl = fixture.baseUrl, policy: Pick<ModelPolicySettings, "reasoningEffort" | "maxOutputTokens"> = {}) {
   const mock = new MockAgent();
   mock.disableNetConnect();
   const origin = new URL(baseUrl).origin;
@@ -179,7 +250,7 @@ async function mockedProbe(t: TestContext, apiMode: ModelSettings["apiMode"], st
     try { return await modelFetch(transport, baseUrl)(url, { method: "POST", body: "{}", signal }); }
     finally { await transport.destroy(); }
   };
-  return { run: () => testModelConnection({ ...fixture, baseUrl, apiMode }, "93.184.216.34"), raw, calls };
+  return { run: (testKind: ModelTestKind = "tools") => testModelConnection({ ...fixture, ...policy, baseUrl, apiMode }, "93.184.216.34", testKind), raw, calls };
 }
 
 test("Responses and Chat probes require valid function arguments and sanitize provider errors without retries", async t => {
@@ -195,7 +266,8 @@ test("Responses and Chat probes require valid function arguments and sanitize pr
       assert.equal(probe.calls[0].body.model, fixture.model);
       assert.deepEqual(probe.calls[0].body.tool_choice, apiMode === "responses" ? { type: "function", name: "connection_check" } : { type: "function", function: { name: "connection_check" } });
       assert.equal(probe.calls[0].body.thinking, undefined);
-      if (apiMode === "responses") assert.equal((probe.calls[0].body.text as { format: { type: string } }).format.type, "json_schema");
+      assert.equal(probe.calls[0].body.text, undefined, "tool checks must not mix in structured text output");
+      assert.equal(probe.calls[0].body.response_format, undefined);
     });
     for (const argumentsText of ['{"ok":false}', 'invalid-json']) {
       await t.test(`${apiMode}: invalid tool arguments are rejected`, async child => {
@@ -207,7 +279,7 @@ test("Responses and Chat probes require valid function arguments and sanitize pr
       });
     }
     await t.test(`${apiMode}: text-only output is not a successful tool probe`, async child => {
-      const plain = apiMode === "responses" ? responsesReply([]) : chatReply({ role: "assistant", content: "connected" });
+      const plain = apiMode === "responses" ? responsesReply([{ type: "message", id: "msg-fixture", role: "assistant", status: "completed", content: [{ type: "output_text", text: "connected", annotations: [] }] }]) : chatReply({ role: "assistant", content: "connected" });
       const probe = await mockedProbe(child, apiMode, 200, plain);
       await assert.rejects(probe.run(), error => error instanceof ApiError && error.status === 422);
       assert.equal(probe.calls.length, 1);
@@ -230,13 +302,110 @@ test("Responses and Chat probes require valid function arguments and sanitize pr
     const probe = await mockedProbe(child, "chat_completions", 200, reply, {}, "https://api.deepseek.com");
     assert.equal((await probe.run()).ok, true);
     assert.deepEqual(probe.calls[0].body.thinking, { type: "disabled" });
+    assert.equal(probe.calls[0].body.reasoning_effort, undefined, "Disabled DeepSeek Chat thinking keeps its established request shape");
   });
   await t.test("DeepSeek Responses mode does not receive Chat Completions settings", async child => {
     const reply = responsesReply([{ id: "fc-fixture", type: "function_call", name: "connection_check", arguments: '{"ok":true}', call_id: "fixture-call", status: "completed" }]);
     const probe = await mockedProbe(child, "responses", 200, reply, {}, "https://api.deepseek.com");
     assert.equal((await probe.run()).ok, true);
     assert.equal(probe.calls[0].body.thinking, undefined);
+    assert.deepEqual(probe.calls[0].body.reasoning, { effort: "none" });
   });
+});
+
+test("DeepSeek capability probes use the saved thinking policy and explicit caps", async t => {
+  for (const apiMode of ["responses", "chat_completions"] as const) {
+    for (const [reasoningEffort, maxOutputTokens, expectedTokens] of [["default", null, 8192], ["low", null, 2048], ["high", null, 8192], ["max", 1024, 1024]] as const) {
+      await t.test(`${apiMode} ${reasoningEffort} cap=${maxOutputTokens}`, async child => {
+        const reply = apiMode === "responses"
+          ? responsesReply([{ id: "fc-fixture", type: "function_call", name: "connection_check", arguments: '{"ok":true}', call_id: "fixture-call", status: "completed" }])
+          : chatReply({ role: "assistant", tool_calls: [{ id: "fixture-call", type: "function", function: { name: "connection_check", arguments: '{"ok":true}' } }] }, "tool_calls");
+        const probe = await mockedProbe(child, apiMode, 200, reply, {}, "https://api.deepseek.com", { reasoningEffort, maxOutputTokens });
+        assert.equal((await probe.run()).ok, true);
+        const request = probe.calls[0];
+        assert.equal(probe.calls.length, 1, "Changing thinking policy must not add retries or protocols");
+        assert.match(request.path, apiMode === "responses" ? /\/responses$/ : /\/chat\/completions$/);
+        assert.equal(request.body[apiMode === "responses" ? "max_output_tokens" : "max_tokens"], expectedTokens);
+        if (apiMode === "responses") {
+          assert.deepEqual(request.body.reasoning, reasoningEffort === "default" ? undefined : { effort: reasoningEffort });
+          assert.equal(request.body.thinking, undefined);
+          assert.equal(request.body.reasoning_effort, undefined);
+        } else {
+          assert.deepEqual(request.body.thinking, reasoningEffort === "default" ? undefined : { type: "enabled" });
+          assert.equal(request.body.reasoning_effort, reasoningEffort === "default" ? undefined : reasoningEffort);
+          assert.equal(request.body.tool_choice, "auto", "Thinking-mode tool probes must not force an unsupported named function");
+          assert.equal(request.body.reasoning, undefined);
+        }
+      });
+    }
+  }
+  await t.test("thinking-mode automatic choice still requires a real tool call", async child => {
+    const probe = await mockedProbe(child, "chat_completions", 200, chatReply({ role: "assistant", content: '{"ok":true}' }), {}, "https://api.deepseek.com", { reasoningEffort: "high" });
+    await assert.rejects(probe.run(), error => error instanceof ApiError && error.status === 422);
+    assert.equal(probe.calls.length, 1);
+    assert.equal(probe.calls[0].body.tool_choice, "auto");
+  });
+});
+
+test("capability tests keep connection, tools and schema independent on the selected protocol", async t => {
+  assert.equal(modelTestRequestSchema.parse({}).testKind, "connection");
+  assert.throws(() => modelTestRequestSchema.parse({ testKind: "all" }));
+  for (const apiMode of ["responses", "chat_completions"] as const) {
+    for (const testKind of ["connection", "structured_output"] as const) await t.test(`${apiMode} ${testKind}`, async child => {
+      const text = testKind === "connection" ? "OK" : '{"ok":true}';
+      const reply = apiMode === "responses" ? responsesReply([{ type: "message", id: "msg-fixture", role: "assistant", status: "completed", content: [{ type: "output_text", text, annotations: [] }] }]) : chatReply({ role: "assistant", content: text });
+      const probe = await mockedProbe(child, apiMode, 200, reply);
+      const result = await probe.run(testKind);
+      assert.equal(result.ok, true);
+      assert.equal(result.testKind, testKind);
+      assert.equal(result.apiMode, apiMode);
+      assert.equal(probe.calls.length, 1);
+      assert.match(probe.calls[0].path, apiMode === "responses" ? /\/responses$/ : /\/chat\/completions$/);
+      assert.equal(probe.calls[0].body.tools, undefined);
+      assert.equal(probe.calls[0].body.tool_choice, undefined);
+      const format = apiMode === "responses" ? (probe.calls[0].body.text as { format?: { type: string } } | undefined)?.format : probe.calls[0].body.response_format as { type: string } | undefined;
+      assert.equal(format?.type, testKind === "structured_output" ? "json_schema" : undefined);
+    });
+    for (const text of ['{"ok":false}', '{"ok":true,"extra":1}', 'not-json']) await t.test(`${apiMode} invalid structured text ${text}`, async child => {
+      const reply = apiMode === "responses" ? responsesReply([{ type: "message", id: "msg-fixture", role: "assistant", status: "completed", content: [{ type: "output_text", text, annotations: [] }] }]) : chatReply({ role: "assistant", content: text });
+      const probe = await mockedProbe(child, apiMode, 200, reply);
+      await assert.rejects(probe.run("structured_output"), /结构化文本/);
+      assert.equal(probe.calls.length, 1);
+    });
+    await t.test(`${apiMode} HTTP400 preserves only safe diagnostics`, async child => {
+      const probe = await mockedProbe(child, apiMode, 400, { error: { message: `private diagnostic ${fixture.apiKey}`, param: "text.format.private-secret", type: "invalid_request_error" } });
+      await assert.rejects(probe.run("structured_output"), error => error instanceof ApiError && /HTTP 400/.test(error.message) && /参数：text/.test(error.message) && !/private|secret|fixture-key/.test(error.message));
+      assert.equal(probe.calls.length, 1);
+    });
+    await t.test(`${apiMode} malformed upstream parameter cannot break diagnostics`, async child => {
+      const probe = await mockedProbe(child, apiMode, 400, { error: { message: fixture.apiKey, param: { private: fixture.apiKey } } });
+      await assert.rejects(probe.run("connection"), error => error instanceof ApiError && /HTTP 400/.test(error.message) && !error.message.includes(fixture.apiKey));
+    });
+    await t.test(`${apiMode} incomplete JSON is never a successful capability test`, async child => {
+      const text = '{"ok":true}';
+      const reply = apiMode === "responses" ? { ...responsesReply([{ type: "message", id: "msg-fixture", role: "assistant", status: "incomplete", content: [{ type: "output_text", text, annotations: [] }] }]), status: "incomplete" } : chatReply({ role: "assistant", content: text }, "length");
+      const probe = await mockedProbe(child, apiMode, 200, reply);
+      await assert.rejects(probe.run("structured_output"), apiMode === "responses" ? /未完成/ : /截断/);
+    });
+  }
+});
+
+test("known DeepSeek Chat schema limitations stop before dispatch without blocking other protocols", async t => {
+  const probe = await mockedProbe(t, "chat_completions", 200, {}, {}, "https://api.deepseek.com");
+  await assert.rejects(probe.run("structured_output"), /不支持.*JSON Schema/);
+  assert.equal(probe.calls.length, 0);
+  for (const [baseUrl, apiMode] of [["https://api.deepseek.com", "responses"], ["https://api.openai.com/v1", "chat_completions"], [fixture.baseUrl, "chat_completions"]] as const) {
+    assert.doesNotThrow(() => assertStructuredOutputSupported({ baseUrl, apiMode }));
+  }
+  const env = { ...getResearchConfig({ OPENAI_API_KEY: fixture.apiKey, OPENAI_BASE_URL: "https://api.deepseek.com", OPENAI_API_MODE: "chat_completions", SCENARIOFORGE_MODEL: fixture.model, SCENARIOFORGE_INTERNAL_TOKEN: "fixture-token-".repeat(3) }), PROJECT_MODEL_CONFIG: true, MODEL_VALIDATED_ADDRESS: "93.184.216.34" };
+  const provider = createModelProvider(env);
+  try {
+    const agent = new ResearchAgent({ name: "unsupported schema fixture", model: fixture.model, outputType: z.object({ ok: z.boolean() }), modelSettings: { retry: { maxRetries: 0 } } });
+    await assert.rejects(new Runner({ modelProvider: provider, tracingDisabled: true }).run(agent, "test"), /不支持.*JSON Schema/);
+    const stream = await new Runner({ modelProvider: provider, tracingDisabled: true }).run(agent, "test", { stream: true });
+    await assert.rejects(stream.completed, /不支持.*JSON Schema/);
+    assert.equal(probe.calls.length, 0, "The agent must not fall back to JSON mode or another endpoint");
+  } finally { await provider.close(); }
 });
 
 test("DeepSeek research requests carry the same compatibility settings through the Agents SDK", async t => {
@@ -246,12 +415,13 @@ test("DeepSeek research requests carry the same compatibility settings through t
   const env = { ...getResearchConfig({ OPENAI_API_KEY: fixture.apiKey, OPENAI_BASE_URL: "https://api.deepseek.com", OPENAI_API_MODE: "chat_completions", SCENARIOFORGE_MODEL: fixture.model, SCENARIOFORGE_INTERNAL_TOKEN: "fixture-token-".repeat(3) }), PROJECT_MODEL_CONFIG: true, MODEL_VALIDATED_ADDRESS: "93.184.216.34" };
   const provider = createModelProvider(env);
   try {
-    const agent = new ResearchAgent({ name: "DeepSeek fixture", model: fixture.model, modelSettings: { maxTokens: 777, providerData: modelProviderData({ baseUrl: env.OPENAI_BASE_URL, apiMode: env.OPENAI_API_MODE }), retry: { maxRetries: 0 } } });
+    const agent = new ResearchAgent({ name: "DeepSeek fixture", model: fixture.model, tools: [tool({ name: "read_fixture", description: "Read a fixture", parameters: z.object({ path: z.string() }), execute: async () => "unused" })], modelSettings: { maxTokens: 777, providerData: modelProviderData({ baseUrl: env.OPENAI_BASE_URL, apiMode: env.OPENAI_API_MODE }), retry: { maxRetries: 0 } } });
     const runner = new Runner({ modelProvider: provider, tracingDisabled: true });
     assert.equal((await runner.run(agent, "test")).finalOutput, "ok");
     assert.equal(probe.calls.length, 1);
     assert.deepEqual(probe.calls[0].body.thinking, { type: "disabled" });
     assert.equal(probe.calls[0].body.max_tokens, 777);
+    assert.equal((probe.calls[0].body.tools as { function: { strict: boolean } }[])[0].function.strict, true);
   } finally { await provider.close(); }
 });
 

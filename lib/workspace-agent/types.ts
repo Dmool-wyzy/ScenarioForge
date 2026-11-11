@@ -1,3 +1,5 @@
+import type { ModelDiagnostic } from "../model-diagnostics";
+
 export type SkillFile = {
   id: string; packageId: string; packageTitle: string; filename: string;
   version: number; purpose: string; kind: "reference" | "workflow";
@@ -20,7 +22,9 @@ export type ExecutionProgress = {
   durationMs?: number;
   fileCount?: number;
   status?: "passed" | "failed" | "unavailable";
+  recovery?: "file_read_required" | "stale_head";
   skill?: { filename: string; version: number };
+  model?: ModelDiagnostic & { timeoutSeconds?: number; budgetMode?: "auto" | "manual" };
 };
 export type ExecutionView = {
   target?: "github" | "local"; runnerId?: string | null; workspaceDirectory?: string | null;
