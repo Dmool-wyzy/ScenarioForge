@@ -1,6 +1,8 @@
 # 验收记录
 
-2026-11-11 源码交付摘要见[本版说明](RELEASE_NOTES_20261111.md)。本次只更新源码，服务器部署与生产迁移尚未进行。公开的模拟资料截图为[方案页](evidence/workspace-research-20261111.png)、[执行页](evidence/workspace-execution-20261111.png)、[手机页](evidence/workspace-mobile-20261111.png)；原始 `.tmp/` 日志及运行数据不随仓库分发，下文路径仅供原开发机追溯。
+2026-11-11 源码交付摘要见[本版说明](RELEASE_NOTES_20261111.md)；同日已完成服务器发布和三条新增生产迁移，详见[上线记录](DEPLOYMENT-20261111.md)。公开的模拟资料截图为[方案页](evidence/workspace-research-20261111.png)、[执行页](evidence/workspace-execution-20261111.png)、[手机页](evidence/workspace-mobile-20261111.png)；原始 `.tmp/` 日志及运行数据不随仓库分发，下文路径仅供原开发机追溯。
+
+此次服务器验收通过 Linux 离线回归 133/133、独立 MySQL 测试 19/19、真实 Docker 隔离测试 1/1，以及生产 HTTPS 登录、文档清单预览、Runner API 配对、目录心跳与撤销。临时数据库、账号和业务数据均已清理，原生产配置保持不变。此次没有调用真实模型、运行远程 Runner CLI 或验证完整 GitHub Agent 链路；静态资源检查不代表浏览器布局交互验收，相关完整流程继续待验。
 
 上传前将 `check-project-agent`、`check-plan-documents`、`check-task-scheduler`、`check-model-transport`、`check-project-model-settings`、`check-workspace-agent`、`check-workspace-agent-tool-concurrency`、`check-local-runner-filesystem`、`check-local-runner-cli`、`check-local-runner-commands` 十组离线回归合并复核，共 133/133（含子测试）通过，全项目 ESLint 通过。全部使用本机夹具，无真实模型调用；其中方案等用例与下文分次验收重合，不重复累计。此次在 Windows 运行，文件权限及符号链接的部分检查仍需 Linux，不能据此声称跨平台全验。
 

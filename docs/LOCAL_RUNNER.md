@@ -1,6 +1,6 @@
 # 本地工作区 Runner
 
-这是 2026-11-11 源码中的本地 Runner，服务器部署仍待安排。前端提供「本地工作区」和「GitHub 仓库」两种工作方式；研究文档选择、固定技能版本、任务进度和检查结果共用现有执行链路。源码版本、已通过的验证及部署待办见[本版说明](RELEASE_NOTES_20261111.md)；更新 GitHub 源码不等于线上服务已升级。
+这是 2026-11-11 源码中的本地 Runner，其服务端已部署到 `https://175.27.143.14/`。前端提供「本地工作区」和「GitHub 仓库」两种工作方式；研究文档选择、固定技能版本、任务进度和检查结果共用现有执行链路。源码版本及待验收事项见[本版说明](RELEASE_NOTES_20261111.md)，部署与无模型 HTTPS 配对 API 验收见[上线记录](DEPLOYMENT-20261111.md)；用户电脑通过 Runner CLI 远程配对和执行仍待验收。
 
 本地模式直接修改用户选择的目录。Agent 与项目模型密钥留在 ScenarioForge 服务端，Runner 从本机主动通过 HTTPS 领取文件操作，不需要开放本机入站端口，也不要求项目关联 GitHub。GitHub 模式继续在服务器的任务分支工作。
 
@@ -13,7 +13,7 @@ npm run db:generate
 npm run db:deploy
 ```
 
-本地模式迁移为 `20261110170000_local_runner`，依赖先前的 `20261110090000_workspace_execution`；目录展示另需 `20261111120000_local_runner_directory`，只新增两个可空字段，保存连接目录与执行时目录快照。不要在未获授权的生产数据库运行迁移。本轮开发没有部署到服务器。
+本地模式迁移为 `20261110170000_local_runner`，依赖先前的 `20261110090000_workspace_execution`；目录展示另需 `20261111120000_local_runner_directory`，只新增两个可空字段，保存连接目录与执行时目录快照。当前在线站点已在备份后应用这些迁移，全部 14 条 MySQL 迁移均已完成；其他实例的生产迁移仍须取得对应授权。
 
 ## 连接本机目录
 
@@ -27,7 +27,7 @@ node --import tsx scripts/scenarioforge-local-runner.mjs pair --url https://your
 node --import tsx scripts/scenarioforge-local-runner.mjs run
 ```
 
-本地开发可使用 `http://localhost:3000` 或 `http://127.0.0.1:3000`。远程服务器必须使用证书受本机信任的 HTTPS，Runner 不提供跳过 TLS 校验的选项。
+本地开发可使用 `http://localhost:3000` 或 `http://127.0.0.1:3000`。连接当前在线站点时，使用该站点网页生成的配对码及 `--url https://175.27.143.14`；原有 `localhost` 连接不会自动切换。远程服务器必须使用证书受本机信任的 HTTPS，Runner 不提供跳过 TLS 校验的选项。
 
 配对码十分钟内仅可使用一次。Runner 凭证默认有效三十天，网页可立即撤销。完整凭证保存在本机：Windows 为 `%APPDATA%\ScenarioForge\runner.json`；其他系统为 `$XDG_CONFIG_HOME/scenarioforge/runner.json`，未设置时位于 `~/.config/scenarioforge/runner.json`。不要共享或上传这个文件。默认配置保存一个连接，重新配对会替换它；请先停止旧 Runner。凭证目录必须位于选定项目目录之外。
 
@@ -104,8 +104,8 @@ npm run check:local-runner-joint
 
 真实模式还需要可执行的 MySQL 命令行客户端（默认 `mysql.exe`，可用 `SCENARIOFORGE_TEST_MYSQL_CLIENT` 指定完整路径），测试账号需要在该专用库创建和删除触发器的权限。脚本先自检临时触发器确实拒绝第二次 Worker 尝试，再启动网页服务；一次任务最多 24 个模型回合、十分钟，不自动恢复或重试。该触发器只存在于测试库，不改变产品默认的启动/恢复规则。
 
-本机命令审批的浏览器夹具和真实 MySQL 测试不会调用模型；本机 Docker 上下文检查、快照挂载参数、容器回执、超时清理和命令参数传递由 `npm run check:local-runner-commands` 使用模拟 Docker CLI 离线验收。2026-11-10 后续已在本机 Docker Desktop 与 `node:24-alpine` 上完成真实命令隔离验收，且与真实模型、网页审批及 Runner 联合通过；该结果不代表远程服务器上的 Web 服务已配置 Docker 权限或完成远程 Runner 配对。
+本机命令审批的浏览器夹具和真实 MySQL 测试不会调用模型；本机 Docker 上下文检查、快照挂载参数、容器回执、超时清理和命令参数传递由 `npm run check:local-runner-commands` 使用模拟 Docker CLI 离线验收。2026-11-10 后续已在本机 Docker Desktop 与 `node:24-alpine` 上完成真实命令隔离验收，且与真实模型、网页审批及 Runner 联合通过。该历史记录仅覆盖本机；2026-11-11 上线时另行配置并验证了服务器 Web 的 Docker 权限及私有导出目录，未完成用户电脑的远程 Runner 配对与执行。
 
 结果保存在 `.tmp/local-joint-fixture-*` 或 `.tmp/local-joint-real-*`：包括脱敏 `report.json`、Web/Runner 日志、测试文件，成功时还有完成页面截图。脚本停止自身浏览器与子进程，删除测试业务记录、临时触发器及本轮 Runner 凭证；提供测试库和 MySQL 实例的维护者仍须负责最终关闭与删除临时数据库环境。真实模型失败也可能产生 API 消耗，报告没有用量统计时不能记作零。
 
-2026-11-10 的本机真实模型、网页、Runner 与 Docker 联合验收已通过：一次任务、一次 Worker 尝试、仅批准 `node --test tests/calc.test.mjs`，五项测试通过。更早两次真实模型任务失败的记录仍保留为历史，不应与这次成功结果混淆。测试使用预置技能，未覆盖研究完成后自动派发编码任务；远程服务器配对与部署仍待验收。详情见[验收记录](WORKSPACE_AGENT_VALIDATION_20261110.md)。
+2026-11-10 的本机真实模型、网页、Runner 与 Docker 联合验收已通过：一次任务、一次 Worker 尝试、仅批准 `node --test tests/calc.test.mjs`，五项测试通过。更早两次真实模型任务失败的记录仍保留为历史，不应与这次成功结果混淆。测试使用预置技能，未覆盖研究完成后自动派发编码任务，详情见[验收记录](WORKSPACE_AGENT_VALIDATION_20261110.md)。线上部署及 HTTPS 配对 API 已于 2026-11-11 验证；用户电脑通过 Runner CLI 操作实际目录、新文档入口的真实模型与 Docker 联合验收仍待完成。

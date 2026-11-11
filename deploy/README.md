@@ -1,5 +1,7 @@
 # Ubuntu 单机部署
 
+最近发布为 2026-11-11 的 `workspace-agent-20261111-662e5ed`，14 条有效迁移均已应用；部署过程、备份和验收边界见[上线记录](../docs/DEPLOYMENT-20261111.md)。Web 的 Docker 组权限及私有导出路径通过独立 systemd drop-in 配置，更新时保留该文件；现有私有环境配置与加密密钥保持原值。
+
 访问地址是 `https://175.27.143.14`。Next.js 和 Python MCP 使用项目目录内的运行时，由 systemd 常驻管理；nginx 使用服务器已经缓存的镜像，仅它监听公网 80/443。Node 只监听回环 3000，MCP 只监听回环 8000，数据库沿用已有 MySQL 3307。所有应用数据放在 MySQL，浏览器只访问网页入口。
 
 不需要拉取 Node、uv 或 Certbot 容器镜像。`compose.yaml` 仅包含 proxy，指定 `pull_policy: never`，不会访问不可达的镜像仓库。此配置使用 Linux host network；一个 Next.js 实例负责网页和后台任务，不横向扩容。
