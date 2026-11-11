@@ -1,5 +1,15 @@
 # 验收记录
 
+2026-11-11 源码交付摘要见[本版说明](RELEASE_NOTES_20261111.md)。本次只更新源码，服务器部署与生产迁移尚未进行。公开的模拟资料截图为[方案页](evidence/workspace-research-20261111.png)、[执行页](evidence/workspace-execution-20261111.png)、[手机页](evidence/workspace-mobile-20261111.png)；原始 `.tmp/` 日志及运行数据不随仓库分发，下文路径仅供原开发机追溯。
+
+上传前将 `check-project-agent`、`check-plan-documents`、`check-task-scheduler`、`check-model-transport`、`check-project-model-settings`、`check-workspace-agent`、`check-workspace-agent-tool-concurrency`、`check-local-runner-filesystem`、`check-local-runner-cli`、`check-local-runner-commands` 十组离线回归合并复核，共 133/133（含子测试）通过，全项目 ESLint 通过。全部使用本机夹具，无真实模型调用；其中方案等用例与下文分次验收重合，不重复累计。此次在 Windows 运行，文件权限及符号链接的部分检查仍需 Linux，不能据此声称跨平台全验。
+
+2026-11-11 的显式方案文档、技能交接与本地 Runner 验收见[专项报告](PLAN_WORKFLOW_VALIDATION_20261111.md)。本次模型为本机 HTTP 夹具，没有真实模型费用；此前真实模型与 Docker 的范围见[2026-11-10 记录](WORKSPACE_AGENT_VALIDATION_20261110.md)。
+
+同日可编辑文档清单更新已完成：本地规则预览、用户确认 1–20 份后单次生成；方案回归 15/15，浏览器组合 34/34 与过期清单补验单项 1/1，类型检查、ESLint 和隔离生产构建通过。独立 MySQL、真实网页及 Runner 联合验收通过，现场保存三份文档、交接冻结技能、修改文件并完成审查，独立 Node 测试 5/5；本机模型夹具无付费调用。最终报告 `.tmp/plan-joint-fixture-zBzXgA/report.json`，临时测试库及服务已清理。完整范围、一次脚本定位失败及重验记录、尚待真实模型/Docker 验收事项见专项报告末尾“同日更新：可编辑文档清单”。
+
+后续双页签改版已完成：方案与执行分区、顶部目录/连接/待审批提示、切换保留草稿和编辑锁、历史折叠及深链兼容。组合浏览器 42/42、五项集成用例分次通过，类型检查、ESLint、隔离生产构建通过；新布局的独立数据库/网页/Runner 联合验收及可信 Node 测试 5/5 通过。报告 `.tmp/plan-joint-fixture-JDNHGS/report.json`，测试库与临时服务已清理，无真实模型或 Docker 调用。截图、完整范围和后续待办见专项报告“双页签工作区”追记。
+
 ## 项目模型凭据优先级与引用校验（2026-10-17）
 
 - Node 与 Python 的模型调用优先读取项目 `.env.local` 中的模型 key、API 地址、API 模式、模型名及超时，不修改系统变量。空项目 key 直接报错，不回退系统 key；隔离测试显式使用 `SCENARIOFORGE_ENV_FILE`。

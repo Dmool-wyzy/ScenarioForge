@@ -14,6 +14,9 @@ export const userSaveSchema = z.object({ baseVersion: z.number().int().min(1), c
 
 async function resumeAfterEdit(tx: Prisma.TransactionClient, packageId: string, message: string, always: boolean) {
   const p = await tx.researchPackage.findUniqueOrThrow({ where: { id: packageId } });
+  // Editing a draft skill is a local document operation. Only an existing research
+  // plan has work to resume; document edits must not silently call a paid agent.
+  if (!p.researchPlan || ["documents_plan_ready", "drafting_documents", "documents_ready", "documents_failed"].includes(p.status)) return;
   const locked = await tx.workspaceFile.count({ where: { packageId, lockedBy: { not: null } } });
   const blocked = await tx.clarification.count({ where: { packageId, priority: "blocking", status: { in: ["waiting", "blocked"] } } });
   if ((!always && p.status !== "waiting_for_edit") || locked || blocked) {
@@ -24,10 +27,10 @@ async function resumeAfterEdit(tx: Prisma.TransactionClient, packageId: string, 
   await tx.researchPackage.update({ where: { id: packageId }, data: { status: "researching", taskState: running ? "running" : "queued", pendingMessage: [p.pendingMessage, message].filter(Boolean).join("\n") } });
 }
 
-export async function updateFileLock(packageId: string, filename: string, input: unknown, userId = "user") {
+export async function updateFileLock(packageId: string, filename: string, input: unknown, userId = "user", database: Pick<typeof db, "$transaction"> = db) {
   const name = filenameSchema.parse(filename);
   const data = lockSchema.parse(input);
-  return db.$transaction(async (tx) => {
+  return database.$transaction(async (tx) => {
     const file = await tx.workspaceFile.findUnique({ where: { packageId_filename: { packageId, filename: name } } });
     if (!file) throw new ApiError(404, "文件尚未生成。");
     const active = file.lockedBy && file.lockExpiresAt && file.lockExpiresAt > new Date();
@@ -50,10 +53,10 @@ export async function updateFileLock(packageId: string, filename: string, input:
   });
 }
 
-export async function saveUserFile(packageId: string, filename: string, input: unknown, userId = "user") {
+export async function saveUserFile(packageId: string, filename: string, input: unknown, userId = "user", database: Pick<typeof db, "$transaction"> = db) {
   const name = filenameSchema.parse(filename);
   const data = userSaveSchema.parse(input);
-  return db.$transaction(async (tx) => {
+  return database.$transaction(async (tx) => {
     const file = await tx.workspaceFile.findUnique({ where: { packageId_filename: { packageId, filename: name } } });
     if (!file) throw new ApiError(404, "文件尚未生成。");
     if (file.version !== data.baseVersion) throw new ApiError(409, "保存失败：文件已有新版本。你的编辑内容已保留，请读取最新版本后合并。");

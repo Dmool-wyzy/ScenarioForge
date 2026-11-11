@@ -2,12 +2,13 @@ import "server-only";
 import OpenAI from "openai";
 import { ApiError } from "./errors";
 import { modelFetch, modelTransport } from "./model-endpoint";
+import { modelResponseFetch } from "./model-response";
 import { modelProviderData, type ModelSettings } from "./model-settings";
 
 export async function testModelConnection(settings: ModelSettings, address: string) {
   const transport = modelTransport(settings.baseUrl, 30000, address);
   const client = new OpenAI({ apiKey: settings.apiKey, baseURL: settings.baseUrl, timeout: 30000, maxRetries: 0,
-    fetch: modelFetch(transport, settings.baseUrl) });
+    fetch: modelResponseFetch(modelFetch(transport, settings.baseUrl), settings.apiMode) });
   const parameters = { type: "object" as const, properties: { ok: { type: "boolean" as const } }, required: ["ok"], additionalProperties: false };
   let argumentsText: string | undefined;
   try {
@@ -32,7 +33,7 @@ export async function testModelConnection(settings: ModelSettings, address: stri
     if (error instanceof OpenAI.APIConnectionTimeoutError) throw new ApiError(504, "模型测试超过 30 秒，未自动重试。");
     if (error instanceof OpenAI.AuthenticationError || error instanceof OpenAI.PermissionDeniedError) throw new ApiError(422, "API 鉴权失败或账号无权访问该模型，请检查密钥及模型权限。");
     if (error instanceof OpenAI.RateLimitError) throw new ApiError(429, "模型服务限流或额度不足，请检查服务商账户。");
-    if (error instanceof OpenAI.APIConnectionError) throw new ApiError(502, "无法连接模型接口，请检查地址、证书及服务器网络。");
+    if (error instanceof OpenAI.APIConnectionError) throw error.cause instanceof ApiError ? error.cause : new ApiError(502, "无法连接模型接口，请检查地址、证书及服务器网络。");
     if (error instanceof OpenAI.APIError && error.status && error.status >= 500) throw new ApiError(502, `模型服务返回 HTTP ${error.status}，服务端暂时无法完成请求，未自动重试。请稍后重测或查询服务商状态。`);
     throw new ApiError(422, "模型接口未通过测试，请检查 API 地址、模型 ID、协议及工具调用支持。");
   } finally { await transport.destroy(); }

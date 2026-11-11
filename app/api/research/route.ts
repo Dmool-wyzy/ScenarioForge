@@ -6,6 +6,7 @@ import { assertSameOrigin, readJson } from "@/lib/validation";
 import { projectResearchConfig } from "@/lib/model-settings";
 import { queueResearch } from "@/lib/tasks";
 import { parseResearchUpload } from "@/lib/uploads";
+import { prepareDocumentProposal } from "@/lib/plan-documents";
 
 export const runtime = "nodejs";
 export async function POST(request: Request) {
@@ -17,13 +18,15 @@ export async function POST(request: Request) {
     const validateProject = async (value: unknown) => {
       projectId = z.string().min(1).max(100).parse(value);
       await requireProjectAccess(request, projectId);
-      await projectResearchConfig(projectId);
     };
     const multipart = request.headers.get("content-type")?.includes("multipart/form-data");
     const input = multipart ? await parseResearchUpload(request, validateProject) : await readJson(request);
     if (!multipart) await validateProject(z.object({ projectId: z.unknown() }).parse(input).projectId);
+    const { mode } = z.object({ mode: z.enum(["chat", "documents"]).default("chat") }).parse(input);
+    if (mode === "chat") await projectResearchConfig(projectId);
     const pkg = await createResearch(input, projectId);
-    await queueResearch(pkg.id, pkg.goal);
+    if (mode === "documents") await prepareDocumentProposal(pkg.id, pkg.goal, user.id);
+    else await queueResearch(pkg.id, pkg.goal);
     return Response.json({ packageId: pkg.id, status: "created" }, { status: 202 });
   } catch (error) { return errorResponse(error); }
 }

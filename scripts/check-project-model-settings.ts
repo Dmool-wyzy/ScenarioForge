@@ -16,6 +16,14 @@ import { getResearchConfig } from "../lib/env";
 
 const fixture: ModelSettings = { baseUrl: "https://model-fixture.example/v1", model: "fixture-model", apiMode: "responses", timeoutSeconds: 30, deepseekSearchEnabled: false, apiKey: "fixture-key-not-a-real-provider-secret" };
 
+function responsesReply(output: Record<string, unknown>[]) {
+  return { id: "resp-fixture", object: "response", created_at: 0, model: fixture.model, status: "completed", output };
+}
+
+function chatReply(message: Record<string, unknown>, finishReason = "stop") {
+  return { id: "chatcmpl-fixture", object: "chat.completion", created: 0, model: fixture.model, choices: [{ index: 0, finish_reason: finishReason, message }] };
+}
+
 test("model settings use randomized authenticated encryption bound to one project", () => {
   const original = process.env.SCENARIOFORGE_SETTINGS_KEY;
   process.env.SCENARIOFORGE_SETTINGS_KEY = randomBytes(32).toString("base64");
@@ -88,11 +96,31 @@ test("model API URLs reject unsafe syntax, private destinations and mixed DNS an
   answers = [{ address: "127.0.0.1", family: 4 }];
   await assert.rejects(modelAddress("https://localhost/v1"), error => error instanceof ApiError && error.status === 400);
   await assert.rejects(modelAddress("https://metadata.google.internal/v1"), error => error instanceof ApiError && error.status === 400);
+  const originalFakeHosts = process.env.SCENARIOFORGE_MODEL_FAKE_IP_HOSTS;
+  try {
+    process.env.SCENARIOFORGE_MODEL_FAKE_IP_HOSTS = "api.sudocode.chat,model-fixture.example";
+    answers = [{ address: "198.18.0.8", family: 4 }];
+    assert.equal(await modelAddress("https://api.sudocode.chat/v1"), "198.18.0.8");
+    assert.equal(await modelAddress(fixture.baseUrl), "198.18.0.8");
+    await assert.rejects(modelAddress("https://api.sudocode.chat.evil.example/v1"), error => error instanceof ApiError && error.status === 400);
+    answers = [{ address: "198.18.0.8", family: 4 }, { address: "93.184.216.34", family: 4 }];
+    await assert.rejects(modelAddress(fixture.baseUrl), error => error instanceof ApiError && error.status === 400);
+    answers = [{ address: "198.18.0.8", family: 4 }, { address: "10.0.0.4", family: 4 }];
+    await assert.rejects(modelAddress(fixture.baseUrl), error => error instanceof ApiError && error.status === 400);
+    await assert.rejects(modelAddress("https://198.18.0.8/v1"), error => error instanceof ApiError && error.status === 400);
+    process.env.SCENARIOFORGE_MODEL_FAKE_IP_HOSTS = "other.example";
+    answers = [{ address: "198.18.0.8", family: 4 }];
+    await assert.rejects(modelAddress(fixture.baseUrl), error => error instanceof ApiError && error.status === 400);
+  } finally {
+    if (originalFakeHosts === undefined) delete process.env.SCENARIOFORGE_MODEL_FAKE_IP_HOSTS;
+    else process.env.SCENARIOFORGE_MODEL_FAKE_IP_HOSTS = originalFakeHosts;
+  }
 });
 
 test("the transport lookup pins the validated address and rejects other hosts or private pins", async () => {
   const transport = modelTransport(fixture.baseUrl, 5000, "93.184.216.34");
   const blocked = modelTransport(fixture.baseUrl, 5000, "169.254.169.254");
+  const originalFakeHosts = process.env.SCENARIOFORGE_MODEL_FAKE_IP_HOSTS;
   function lookupOf(agent: Agent) {
     const options = Object.getOwnPropertySymbols(agent).find(key => key.description === "options");
     assert.ok(options, "Undici no longer exposes its connection options to this transport check.");
@@ -106,7 +134,19 @@ test("the transport lookup pins the validated address and rejects other hosts or
     assert.deepEqual(await resolve(lookupOf(transport), "model-fixture.example", true), [{ address: "93.184.216.34", family: 4 }]);
     await assert.rejects(resolve(lookupOf(transport), "different.example"));
     await assert.rejects(resolve(lookupOf(blocked), "model-fixture.example"));
-  } finally { await transport.destroy(); await blocked.destroy(); }
+    process.env.SCENARIOFORGE_MODEL_FAKE_IP_HOSTS = "model-fixture.example";
+    const fakeIpTransport = modelTransport(fixture.baseUrl, 5000, "198.18.0.8");
+    try {
+      assert.equal(await resolve(lookupOf(fakeIpTransport), "model-fixture.example"), "198.18.0.8");
+      process.env.SCENARIOFORGE_MODEL_FAKE_IP_HOSTS = "other.example";
+      await assert.rejects(resolve(lookupOf(fakeIpTransport), "model-fixture.example"));
+    } finally { await fakeIpTransport.destroy(); }
+  } finally {
+    if (originalFakeHosts === undefined) delete process.env.SCENARIOFORGE_MODEL_FAKE_IP_HOSTS;
+    else process.env.SCENARIOFORGE_MODEL_FAKE_IP_HOSTS = originalFakeHosts;
+    await transport.destroy();
+    await blocked.destroy();
+  }
 });
 
 async function mockedProbe(t: TestContext, apiMode: ModelSettings["apiMode"], status: number, reply: object | string | Buffer, headers: Record<string, string> = {}, baseUrl = fixture.baseUrl) {
@@ -145,8 +185,8 @@ async function mockedProbe(t: TestContext, apiMode: ModelSettings["apiMode"], st
 test("Responses and Chat probes require valid function arguments and sanitize provider errors without retries", async t => {
   for (const apiMode of ["responses", "chat_completions"] as const) {
     const success = apiMode === "responses"
-      ? { output: [{ type: "function_call", name: "connection_check", arguments: '{"ok":true}', call_id: "fixture-call" }] }
-      : { choices: [{ message: { role: "assistant", tool_calls: [{ type: "function", function: { name: "connection_check", arguments: '{"ok":true}' } }] } }] };
+      ? responsesReply([{ id: "fc-fixture", type: "function_call", name: "connection_check", arguments: '{"ok":true}', call_id: "fixture-call", status: "completed" }])
+      : chatReply({ role: "assistant", tool_calls: [{ id: "fixture-call", type: "function", function: { name: "connection_check", arguments: '{"ok":true}' } }] }, "tool_calls");
     await t.test(`${apiMode}: function probe succeeds offline`, async child => {
       const probe = await mockedProbe(child, apiMode, 200, success);
       assert.equal((await probe.run()).ok, true);
@@ -160,14 +200,14 @@ test("Responses and Chat probes require valid function arguments and sanitize pr
     for (const argumentsText of ['{"ok":false}', 'invalid-json']) {
       await t.test(`${apiMode}: invalid tool arguments are rejected`, async child => {
         const reply = apiMode === "responses"
-          ? { output: [{ type: "function_call", name: "connection_check", arguments: argumentsText }] }
-          : { choices: [{ message: { tool_calls: [{ type: "function", function: { name: "connection_check", arguments: argumentsText } }] } }] };
+          ? responsesReply([{ id: "fc-fixture", type: "function_call", name: "connection_check", arguments: argumentsText, call_id: "fixture-call", status: "completed" }])
+          : chatReply({ role: "assistant", tool_calls: [{ id: "fixture-call", type: "function", function: { name: "connection_check", arguments: argumentsText } }] }, "tool_calls");
         const probe = await mockedProbe(child, apiMode, 200, reply);
         await assert.rejects(probe.run(), error => error instanceof ApiError && error.status === 422);
       });
     }
     await t.test(`${apiMode}: text-only output is not a successful tool probe`, async child => {
-      const plain = apiMode === "responses" ? { output: [] } : { choices: [{ message: { content: "connected" } }] };
+      const plain = apiMode === "responses" ? responsesReply([]) : chatReply({ role: "assistant", content: "connected" });
       const probe = await mockedProbe(child, apiMode, 200, plain);
       await assert.rejects(probe.run(), error => error instanceof ApiError && error.status === 422);
       assert.equal(probe.calls.length, 1);
@@ -186,13 +226,13 @@ test("Responses and Chat probes require valid function arguments and sanitize pr
     });
   }
   await t.test("DeepSeek Chat Completions disables thinking for forced tool calls", async child => {
-    const reply = { choices: [{ message: { role: "assistant", tool_calls: [{ type: "function", function: { name: "connection_check", arguments: '{"ok":true}' } }] } }] };
+    const reply = chatReply({ role: "assistant", tool_calls: [{ id: "fixture-call", type: "function", function: { name: "connection_check", arguments: '{"ok":true}' } }] }, "tool_calls");
     const probe = await mockedProbe(child, "chat_completions", 200, reply, {}, "https://api.deepseek.com");
     assert.equal((await probe.run()).ok, true);
     assert.deepEqual(probe.calls[0].body.thinking, { type: "disabled" });
   });
   await t.test("DeepSeek Responses mode does not receive Chat Completions settings", async child => {
-    const reply = { output: [{ type: "function_call", name: "connection_check", arguments: '{"ok":true}', call_id: "fixture-call" }] };
+    const reply = responsesReply([{ id: "fc-fixture", type: "function_call", name: "connection_check", arguments: '{"ok":true}', call_id: "fixture-call", status: "completed" }]);
     const probe = await mockedProbe(child, "responses", 200, reply, {}, "https://api.deepseek.com");
     assert.equal((await probe.run()).ok, true);
     assert.equal(probe.calls[0].body.thinking, undefined);

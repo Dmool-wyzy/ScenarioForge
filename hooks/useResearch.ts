@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ResearchSnapshot } from "@/lib/types";
+import type { DocumentProposal, DocumentSpec } from "@/lib/document-proposal";
 
 const EVENT_TYPES = ["user_message", "assistant_message", "turn_started", "turn_completed", "turn_failed", "source_added", "evidence_indexed", "research_question_completed", "retrieval_completed", "index_failed", "index_rebuild_required", "citation_warning", "tool_started", "tool_completed", "tool_failed", "agent_task_started", "agent_task_review", "agent_task_submitted", "agent_task_completed", "agent_task_failed", "research_started", "planning_completed", "file_plan_updated", "search_started", "search_completed", "search_failed", "evidence_found", "clarification_requested", "clarification_answered", "clarification_timeout", "file_created", "file_updated", "file_locked", "file_unlocked", "research_completed", "research_failed"];
 export async function apiRequest<T>(url: string, options?: RequestInit): Promise<T> {
@@ -17,6 +18,8 @@ export function useResearch(projectId: string, initialPackageId?: string | null)
   const [error, setError] = useState("");
   const [connection, setConnection] = useState("idle");
   const [creating, setCreating] = useState(false);
+  const [generatingDocuments, setGeneratingDocuments] = useState(false);
+  const [planningDocuments, setPlanningDocuments] = useState(false);
   const refreshVersion = useRef(0);
   const select = useCallback((id: string) => {
     setPackageId(id);
@@ -42,7 +45,7 @@ export function useResearch(projectId: string, initialPackageId?: string | null)
       source = new EventSource(`/api/research/${packageId}/stream?after=${data.events.at(-1)?.sequence ?? 0}`);
       source.onopen = () => { if (active) setConnection("connected"); };
       source.onerror = () => { if (active) setConnection("reconnecting"); };
-      for (const type of EVENT_TYPES) source.addEventListener(type, () => { if (active) void refresh(); });
+      for (const type of [...EVENT_TYPES, "documents_plan_proposed", "documents_requested", "documents_started", "documents_completed", "documents_failed", "execution_queued", "execution_started", "execution_progress", "execution_checkpoint", "execution_completed", "execution_stopped", "execution_failed"]) source.addEventListener(type, () => { if (active) void refresh(); });
     }).catch((e) => { if (active) setError(e instanceof Error ? e.message : "读取对话失败。"); });
     return () => { active = false; abort.abort(); source?.close(); };
   }, [packageId, refresh]);
@@ -60,5 +63,22 @@ export function useResearch(projectId: string, initialPackageId?: string | null)
     await apiRequest(`/api/research/${packageId}/messages`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message }) });
     await refresh();
   };
-  return { packageId, snapshot, error, setError, connection, creating, create, refresh, sendMessage };
+  const previewDocuments = async (request: string) => {
+    if (!packageId) return;
+    setPlanningDocuments(true); setError("");
+    try {
+      const result = await apiRequest<{ proposal: DocumentProposal }>(`/api/research/${packageId}/documents`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "preview", request }) });
+      await refresh();
+      return result.proposal;
+    } finally { setPlanningDocuments(false); }
+  };
+  const generateDocuments = async (proposalId: string, documents: DocumentSpec[]) => {
+    if (!packageId) return;
+    setGeneratingDocuments(true); setError("");
+    try {
+      await apiRequest(`/api/research/${packageId}/documents`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "generate", proposalId, documents }) });
+      await refresh();
+    } finally { setGeneratingDocuments(false); }
+  };
+  return { packageId, snapshot, error, setError, connection, creating, planningDocuments, generatingDocuments, previewDocuments, generateDocuments, create, refresh, sendMessage, select };
 }

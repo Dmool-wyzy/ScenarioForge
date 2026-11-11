@@ -3,7 +3,24 @@ import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { Agent, fetch as httpFetch } from "undici";
 import { ApiError } from "./errors";
+import { modelRequestIsStreaming } from "./model-response";
 import { isPublicIPv4 } from "./rag/fetch-source";
+
+function isVpnFakeIPv4(address: string) {
+  if (isIP(address) !== 4) return false;
+  const [first, second] = address.split(".").map(Number);
+  return first === 198 && (second === 18 || second === 19);
+}
+
+function fakeIpAllowedForHost(host: string) {
+  if (isIP(host)) return false;
+  return new Set((process.env.SCENARIOFORGE_MODEL_FAKE_IP_HOSTS ?? "")
+    .split(",").map(value => value.trim().toLowerCase()).filter(Boolean)).has(host.toLowerCase());
+}
+
+function isAllowedModelAddress(host: string, address: string) {
+  return isPublicIPv4(address) || (fakeIpAllowedForHost(host) && isVpnFakeIPv4(address));
+}
 
 export function modelBaseUrl(value: string) {
   let url: URL;
@@ -14,12 +31,13 @@ export function modelBaseUrl(value: string) {
 
 export async function modelAddress(baseUrl: string) {
   const host = new URL(modelBaseUrl(baseUrl)).hostname;
-  // shortcut: web-configured model APIs require public IPv4; add IPv6 validation when needed.
   const addresses = isIP(host) ? [{ address: host }] : await Promise.race([
     lookup(host, { family: 4, all: true }),
     new Promise<never>((_, reject) => { const timer = setTimeout(() => reject(new ApiError(400, "API 域名解析超时。")), 10000); timer.unref(); }),
   ]).catch(() => { throw new ApiError(400, "API 域名无法解析到可用的公网地址。"); });
-  if (!addresses.length || addresses.some(row => !isPublicIPv4(row.address))) throw new ApiError(400, "不允许使用本机、内网或保留地址作为模型 API。");
+  const allPublic = addresses.length > 0 && addresses.every(row => isPublicIPv4(row.address));
+  const allVpnFake = addresses.length > 0 && fakeIpAllowedForHost(host) && addresses.every(row => isVpnFakeIPv4(row.address));
+  if (!allPublic && !allVpnFake) throw new ApiError(400, "不允许使用本机、内网或保留地址作为模型 API。");
   return addresses[0].address;
 }
 
@@ -29,7 +47,7 @@ export function modelTransport(baseUrl: string, timeout: number, pinnedAddress?:
     connect: {
       timeout,
       ...(pinnedAddress ? { lookup: (host, options, callback) => {
-        if (host !== hostname || !isPublicIPv4(pinnedAddress)) return callback(new Error("API destination is not allowed"), "", 4);
+        if (host !== hostname || !isAllowedModelAddress(hostname, pinnedAddress)) return callback(new Error("API destination is not allowed"), "", 4);
         if (options.all) callback(null, [{ address: pinnedAddress, family: 4 }]);
         else callback(null, pinnedAddress, 4);
       } } : {}),
@@ -39,20 +57,22 @@ export function modelTransport(baseUrl: string, timeout: number, pinnedAddress?:
   });
 }
 
-export function modelFetch(transport: Agent, baseUrl: string): typeof globalThis.fetch {
+export function modelFetch(transport: Agent, baseUrl: string, options: { preserveStreamingResponse?: boolean } = {}): typeof globalThis.fetch {
   const origin = new URL(baseUrl).origin;
   return async (input, init) => {
     const value = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     if (new URL(value).origin !== origin) throw new ApiError(502, "模型请求超出了配置的服务范围。");
     const headers = new Headers(init?.headers ?? (typeof input !== "string" && !(input instanceof URL) ? input.headers : undefined));
     headers.set("Accept-Encoding", "identity");
-    const options = { ...init, headers, dispatcher: transport, redirect: "error" as const };
-    const response = await (httpFetch as unknown as typeof globalThis.fetch)(input, options);
+    const streaming = options.preserveStreamingResponse && await modelRequestIsStreaming(input, init);
+    const fetchOptions = { ...init, headers, dispatcher: transport, redirect: "error" as const };
+    const response = await (httpFetch as unknown as typeof globalThis.fetch)(input, fetchOptions);
     const encoding = response.headers.get("content-encoding");
     if (encoding && encoding.toLowerCase() !== "identity") {
       await response.body?.cancel();
       throw new ApiError(502, "模型接口未遵守响应编码要求，请检查网关配置。");
     }
+    if (streaming) return response;
     const parts: Uint8Array[] = [];
     let bytes = 0;
     const reader = response.body?.getReader();

@@ -4,6 +4,7 @@ import { OpenAIProvider } from "@openai/agents";
 import { Agent as HttpAgent, fetch as httpFetch } from "undici";
 import { getResearchConfig } from "./env";
 import { modelFetch, modelTransport } from "./model-endpoint";
+import { modelResponseFetch } from "./model-response";
 import type { ResearchConfig } from "./model-settings";
 
 class ResearchModelProvider extends OpenAIProvider {
@@ -24,7 +25,7 @@ export function createModelProvider(env: ResearchConfig = getResearchConfig()) {
   const transport = modelTransport(env.OPENAI_BASE_URL, timeout, env.PROJECT_MODEL_CONFIG ? env.MODEL_VALIDATED_ADDRESS : undefined);
   return new ResearchModelProvider(transport, {
     openAIClient: new OpenAI({ apiKey: env.OPENAI_API_KEY, baseURL: env.OPENAI_BASE_URL, timeout, maxRetries: 0,
-      fetch: env.PROJECT_MODEL_CONFIG ? modelFetch(transport, env.OPENAI_BASE_URL) : httpFetch as unknown as typeof globalThis.fetch, fetchOptions: { dispatcher: transport } }),
+      fetch: modelResponseFetch(env.PROJECT_MODEL_CONFIG ? modelFetch(transport, env.OPENAI_BASE_URL, { preserveStreamingResponse: true }) : httpFetch as unknown as typeof globalThis.fetch, env.OPENAI_API_MODE), fetchOptions: { dispatcher: transport } }),
     useResponses: env.OPENAI_API_MODE === "responses",
   });
 }

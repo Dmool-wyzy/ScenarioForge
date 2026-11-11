@@ -77,7 +77,7 @@ export default function PersonalAgent({ projectId, mode = "inbox" }: { projectId
   };
 
   const busy = pending !== null;
-  return <details className="panel group mb-5 overflow-hidden" open>
+  return <details className="panel group mb-5 overflow-hidden" open={mode === "settings"}>
     <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-5 py-4 sm:px-6">
       <span className="flex flex-wrap items-center gap-x-3 gap-y-1"><span className="text-sm font-semibold text-[#365540]">{mode === "settings" ? "个人模型与接收权限" : "个人 Agent 与任务收件箱"}</span><span className="rounded-full bg-[#eef2e7] px-2.5 py-1 text-[10px] text-[#617655]">{loading ? "读取中" : acceptsAgentTasks && snapshot?.settings ? "已开放接收" : snapshot?.settings ? "未开放接收" : "未配置"}</span></span>
       <span className="shrink-0 text-xs text-[#65735d]"><span className="group-open:hidden">展开</span><span className="hidden group-open:inline">收起</span><span className="ml-2 inline-block transition-transform group-open:rotate-180" aria-hidden="true">⌄</span></span>

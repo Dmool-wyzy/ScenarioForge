@@ -60,7 +60,7 @@ export default function MarkdownEditor({ file, packageId, onSaved, onEditingChan
     try {
       await apiRequest(endpoint, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ baseVersion, content: draft, changeNote: note || "用户更新文档", lockToken: token.current }) });
       sessionStorage.removeItem(draftKey); sessionStorage.removeItem(tokenKey);
-      await onSaved(); setEditing(false); onEditingChange(false); setNotice("已保存，并通知 Agent 重新读取最新内容。");
+      await onSaved(); setEditing(false); onEditingChange(false); setNotice("文档已保存，新版本已在工作区更新；已启动任务的技能版本保持不变。");
     } catch (e) { setError(e instanceof Error ? e.message : "保存失败，草稿仍保留在编辑器中。"); }
     finally { setBusy(false); }
   };

@@ -46,8 +46,8 @@ export async function askQuestions(packageId: string, input: unknown) {
   });
 }
 
-export async function answerQuestion(packageId: string, clarificationId: string, answer: string | string[]) {
-  return db.$transaction(async (tx) => {
+export async function answerQuestion(packageId: string, clarificationId: string, answer: string | string[], database: Pick<typeof db, "$transaction"> = db) {
+  return database.$transaction(async (tx) => {
     const row = await tx.clarification.findFirst({ where: { id: clarificationId, packageId } });
     if (!row) throw new ApiError(404, "未找到此澄清问题。");
     if (row.status === "answered") throw new ApiError(409, "此问题已回答。");
@@ -63,7 +63,7 @@ export async function answerQuestion(packageId: string, clarificationId: string,
     await resumeIfReady(tx, packageId, "澄清问题已回答，请读取最新答案并继续研究。");
     // Answers to optional questions can arrive after completion; incorporate them in a new turn.
     const pkg = await tx.researchPackage.findUniqueOrThrow({ where: { id: packageId } });
-    if (row.priority === "optional") {
+    if (row.priority === "optional" && !["documents_plan_ready", "drafting_documents", "documents_ready", "documents_failed"].includes(pkg.status)) {
       const waiting = ["waiting_for_user", "blocked", "waiting_for_edit"].includes(pkg.status);
       const running = pkg.taskState === "running" && pkg.leaseUntil && pkg.leaseUntil > new Date();
       await tx.researchPackage.update({ where: { id: packageId }, data: { pendingMessage: [pkg.pendingMessage, "用户补充了可选问题的答案，请重新读取并更新工作区，保留用户修改。"].filter(Boolean).join("\n"), ...(!waiting ? { status: "researching", taskState: running ? "running" : "queued" } : {}) } });
@@ -72,18 +72,18 @@ export async function answerQuestion(packageId: string, clarificationId: string,
   });
 }
 
-export async function expireQuestions(packageId?: string, groupId?: string, force = false) {
-  const expired = await db.clarification.findMany({ where: { ...(packageId ? { packageId } : {}), ...(groupId ? { OR: [{ groupId }, { id: groupId }] } : {}), status: "waiting", ...(force ? {} : { expiresAt: { lte: new Date() } }) }, take: 100 });
+export async function expireQuestions(packageId?: string, groupId?: string, force = false, database: Pick<typeof db, "$transaction" | "clarification"> = db) {
+  const expired = await database.clarification.findMany({ where: { ...(packageId ? { packageId } : {}), ...(groupId ? { OR: [{ groupId }, { id: groupId }] } : {}), status: "waiting", ...(force ? {} : { expiresAt: { lte: new Date() } }) }, take: 100 });
   for (const row of expired) {
-    await db.$transaction(async (tx) => {
+    await database.$transaction(async (tx) => {
       const hasDefault = !!row.defaultAssumption?.trim();
       const status = hasDefault ? "defaulted" : row.priority === "blocking" ? "blocked" : "skipped";
       const updated = await tx.clarification.updateMany({ where: { id: row.id, status: "waiting" }, data: { status, answer: hasDefault ? row.defaultAssumption : null, answeredBy: hasDefault ? "timeout_default" : null, answeredAt: hasDefault ? new Date() : null } });
       if (!updated.count) return;
+      await tx.researchPackage.update({ where: { id: row.packageId }, data: { contextVersion: { increment: 1 }, ...(status === "blocked" ? { status: "blocked" } : {}) } });
       if (ragEnabled() && hasDefault) await saveSource(tx, row.packageId, { sourceType: "clarification", sourceKey: `clarification:${row.id}`, title: row.question,
         content: `问题：${row.question}\n假设：${row.defaultAssumption}\n该假设尚未经用户确认。`, metadata: { clarificationId: row.id, answeredBy: "timeout_default", trust: "unconfirmed_assumption" } });
       await appendEvent(tx, row.packageId, "clarification_timeout", status === "blocked" ? "问题等待超时，研究已阻塞，仍可补充回答" : hasDefault ? "等待超时，已使用标注的默认假设" : "可选问题等待超时，保留待确认事项", { clarificationId: row.id, status, answered_by: hasDefault ? "timeout_default" : null });
-      if (status === "blocked") await tx.researchPackage.update({ where: { id: row.packageId }, data: { status: "blocked" } });
       await resumeIfReady(tx, row.packageId, "澄清等待已结束，请读取答案和超时默认假设，再继续研究。");
     });
   }

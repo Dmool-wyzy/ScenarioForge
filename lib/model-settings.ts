@@ -163,6 +163,11 @@ export async function projectResearchConfig(projectId: string) {
   return resolveResearchConfig(projectId, project.modelConfigEncrypted);
 }
 
+// Executions keep the same encrypted project configuration across stop/resume.
+export async function executionResearchConfig(projectId: string, encrypted: string | null) {
+  return resolveResearchConfig(projectId, encrypted);
+}
+
 export async function packageResearchConfig(packageId: string) {
   const pkg = await db.researchPackage.findUnique({ where: { id: packageId }, select: { projectId: true, modelConfigEncrypted: true, leaseOwner: true, taskState: true } });
   if (!pkg) throw new ApiError(404, "未找到研究包。");

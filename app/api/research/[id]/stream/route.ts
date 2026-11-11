@@ -1,6 +1,7 @@
 import { db } from "@/lib/db";
 import { requireResearchAccess } from "@/lib/auth";
 import { errorResponse, logError } from "@/lib/errors";
+import { visibleResearchEvents } from "@/lib/workspace-agent/event-visibility";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -8,7 +9,7 @@ export const dynamic = "force-dynamic";
 export async function GET(request: Request, context: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await context.params;
-    await requireResearchAccess(request, id);
+    const user = await requireResearchAccess(request, id);
     const supplied = request.headers.get("last-event-id") ?? new URL(request.url).searchParams.get("after") ?? "0";
     let cursor = /^\d{1,12}$/.test(supplied) ? Number(supplied) : 0;
     let stopped = false;
@@ -23,10 +24,12 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
           try {
             if (count % 15 === 0) await requireResearchAccess(request, id);
             const events = await db.researchEvent.findMany({ where: { packageId: id, sequence: { gt: cursor } }, orderBy: { sequence: "asc" }, take: 100 });
+            const visible = new Set(await visibleResearchEvents(id, events, user.id));
             if (stopped) return;
             for (const event of events) {
-              controller.enqueue(encoder.encode(`id: ${event.sequence}\nevent: ${event.type}\ndata: ${JSON.stringify({ ...event, payload: event.payload ? JSON.parse(event.payload) : null })}\n\n`));
               cursor = event.sequence;
+              if (!visible.has(event)) continue;
+              controller.enqueue(encoder.encode(`id: ${event.sequence}\nevent: ${event.type}\ndata: ${JSON.stringify({ ...event, payload: event.payload ? JSON.parse(event.payload) : null })}\n\n`));
             }
             if (++count % 15 === 0) controller.enqueue(encoder.encode(": heartbeat\n\n"));
             timer = setTimeout(poll, 1000);

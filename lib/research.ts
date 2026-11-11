@@ -13,6 +13,7 @@ import { planSchema, readResearchPlan } from "./research-plan";
 import { ragEnabled } from "./rag/config";
 import { saveSource } from "./rag/sources";
 import { randomUUID } from "node:crypto";
+import { visibleResearchEvents } from "./workspace-agent/event-visibility";
 export { planSchema } from "./research-plan";
 
 export async function createResearch(input: unknown, projectId?: string) {
@@ -52,8 +53,9 @@ export async function getResearch(id: string) {
   return pkg;
 }
 
-export async function getContext(id: string, activeSearchProvider?: ReturnType<typeof searchProviderName>) {
+export async function getContext(id: string, activeSearchProvider?: ReturnType<typeof searchProviderName>, viewerId?: string) {
   const p = await getResearch(id);
+  p.events = await visibleResearchEvents(id, p.events, viewerId);
   const questions = await db.researchQuestion.findMany({ where: { packageId: id }, orderBy: { ordinal: "asc" } });
   const plan = readResearchPlan(p.researchPlan);
   if (plan) plan.questionDetails = plan.questionDetails.map((detail, index) => {

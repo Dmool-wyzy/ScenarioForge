@@ -52,8 +52,79 @@ model ResearchPackage {
   knowledgeJobs     KnowledgeJob[]
   retrievalLogs     RetrievalLog[]
   agentSubtasks     AgentSubtask[]
+  executions        WorkspaceExecution[]
 
   @@index([projectId])
+}
+
+model WorkspaceExecution {
+  id                   String          @id @default(cuid()) @db.VarChar(100)
+  packageId            String          @db.VarChar(100)
+  package              ResearchPackage @relation(fields: [packageId], references: [id], onDelete: Cascade)
+  createdBy            String          @db.VarChar(100)
+  request              String          @db.LongText
+  skills               String          @db.LongText
+  modelConfigEncrypted String?         @db.LongText
+  status               String          @default("queued") @db.VarChar(30)
+  branch               String?         @db.VarChar(240)
+  baseCommit           String?         @db.VarChar(40)
+  head                 String?         @db.VarChar(40)
+  verification         String?         @db.LongText
+  summary              String?         @db.LongText
+  error                String?         @db.LongText
+  attempts             Int             @default(0)
+  leaseOwner           String?         @db.VarChar(100)
+  leaseUntil           DateTime?
+  createdAt            DateTime        @default(now())
+  updatedAt            DateTime        @updatedAt
+  target               String          @default("github") @db.VarChar(16)
+  runnerId             String?         @db.VarChar(100)
+  workspaceDirectory   String?         @db.VarChar(1000)
+  runner               LocalRunner?    @relation(fields: [runnerId], references: [id], onDelete: SetNull)
+  localReview          String?         @db.LongText
+  commands             LocalRunnerCommand[]
+
+  @@index([packageId, createdAt])
+  @@index([status, leaseUntil])
+  @@index([runnerId, status])
+}
+
+model LocalRunner {
+  id             String @id @db.VarChar(100)
+  projectId      String @db.VarChar(100)
+  userId         String @db.VarChar(100)
+  label          String @db.VarChar(80)
+  workspaceDirectory String? @db.VarChar(1000)
+  pairingHash    String? @unique @db.Char(64)
+  pairingExpires DateTime
+  tokenHash      String? @unique @db.Char(64)
+  expiresAt      DateTime
+  revokedAt      DateTime?
+  lastSeenAt     DateTime?
+  createdAt      DateTime @default(now())
+  project        Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user           User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  executions     WorkspaceExecution[]
+  commands       LocalRunnerCommand[]
+  @@index([projectId, userId])
+}
+
+model LocalRunnerCommand {
+  id          String @id @db.VarChar(100)
+  runnerId    String @db.VarChar(100)
+  executionId String @db.VarChar(100)
+  leaseOwner  String? @db.VarChar(100)
+  executionLease String @db.VarChar(100)
+  operation   String @db.VarChar(20)
+  input       String @db.LongText
+  status      String @default("pending") @db.VarChar(20)
+  result      String? @db.LongText
+  error       String? @db.VarChar(500)
+  expiresAt   DateTime
+  createdAt   DateTime @default(now())
+  runner      LocalRunner @relation(fields: [runnerId], references: [id], onDelete: Cascade)
+  execution   WorkspaceExecution @relation(fields: [executionId], references: [id], onDelete: Cascade)
+  @@index([runnerId, status, createdAt])
 }
 
 model AgentSubtask {
@@ -327,6 +398,7 @@ model RetrievalLog {
 }
 
 model User {
+  localRunners LocalRunner[]
   contributions ContributionRecord[]
   profile      UserProfile?
   favorites    PersonalFavorite[]
@@ -378,6 +450,7 @@ model PersonalFavorite {
 }
 
 model Project {
+  localRunners         LocalRunner[]
   contributions        ContributionRecord[]
   repositoryEnabled    Boolean                @default(false)
   modelConfigEncrypted String?                @db.LongText

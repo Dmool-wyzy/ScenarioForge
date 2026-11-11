@@ -39,6 +39,9 @@ async function setup(page: Page, owner = false) {
 
 test("成员私有追问、编辑交付并确认提交，刷新保留状态", async ({ page }) => {
   const state = await setup(page);
+  const inbox = page.locator("details").filter({ has: page.locator("summary").filter({ hasText: "个人 Agent 与任务收件箱" }) }).first();
+  await expect(inbox).not.toHaveAttribute("open");
+  await inbox.locator("summary").first().click();
   await expect(page.getByText("待你确认提交", { exact: true })).toBeVisible();
   await page.getByRole("textbox", { name: "补充要求或追问" }).fill("只在个人对话补充一个检查点");
   await page.getByRole("button", { name: "发送给个人 Agent" }).click();
@@ -50,8 +53,44 @@ test("成员私有追问、编辑交付并确认提交，刷新保留状态", as
   await expect(page.getByText("已提交团队", { exact: true })).toBeVisible();
   expect(state).toMatchObject({ messages: 1, submissions: 1, submitted: "成员亲自确认的交付" });
   await page.reload();
+  await inbox.locator("summary").first().click();
   await expect(page.getByRole("link", { name: "查看团队审核对话" })).toBeVisible();
   await expect(page.getByRole("button", { name: "确认提交给团队" })).toHaveCount(0);
+});
+
+test("哈希目标在隐藏页签内时只切换一次，异步显露后展开并聚焦", async ({ page }) => {
+  await setup(page);
+  await expect(page.getByRole("tab", { name: "方案与文档", exact: true })).toBeVisible();
+  await page.evaluate(() => {
+    const fixture = document.createElement("section");
+    fixture.id = "async-target-fixture";
+    fixture.dataset.clicks = "0";
+    fixture.innerHTML = `<div role="tablist" aria-label="异步定位夹具">
+      <button type="button" role="tab" id="async-research-tab" aria-controls="async-research-panel" aria-selected="false">异步研究页签</button>
+      <button type="button" role="tab" id="async-execution-tab" aria-controls="async-execution-panel" aria-selected="true">异步执行页签</button>
+    </div>
+    <div role="tabpanel" id="async-research-panel" aria-labelledby="async-research-tab" hidden>
+      <details><summary>异步研究详情</summary><p id="research-reply-async-target">定位到此研究回复</p></details>
+    </div>
+    <div role="tabpanel" id="async-execution-panel" aria-labelledby="async-execution-tab">等待切换</div>`;
+    document.body.append(fixture);
+    const tab = document.getElementById("async-research-tab")!;
+    tab.addEventListener("click", () => {
+      fixture.dataset.clicks = String(Number(fixture.dataset.clicks) + 1);
+      // A real tab may reveal its panel after a state/render boundary.
+      window.setTimeout(() => {
+        tab.setAttribute("aria-selected", "true");
+        document.getElementById("async-execution-tab")!.setAttribute("aria-selected", "false");
+        document.getElementById("async-research-panel")!.removeAttribute("hidden");
+        document.getElementById("async-execution-panel")!.setAttribute("hidden", "");
+      }, 30);
+    });
+    window.location.hash = "research-reply-async-target";
+  });
+  await expect(page.locator("#research-reply-async-target")).toBeFocused();
+  await expect(page.locator("#research-reply-async-target")).toBeInViewport();
+  await expect(page.locator("#async-research-panel details")).toHaveAttribute("open");
+  await expect(page.locator("#async-target-fixture")).toHaveAttribute("data-clicks", "1");
 });
 
 test("组长先查看 Git 差异，再确认合并", async ({ page }) => {

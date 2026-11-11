@@ -46,5 +46,5 @@ export async function parseResearchUpload(request: Request, beforeExtract?: (pro
   let sharedKnowledgeIds: unknown;
   try { sharedKnowledgeIds = JSON.parse(String(form.get("sharedKnowledgeIds") ?? "[]")); }
   catch { throw new ApiError(400, "项目共享资料选择格式无效。"); }
-  return { projectId: form.get("projectId"), goal: form.get("goal"), constraints, files: extracted, sharedKnowledgeIds };
+  return { projectId: form.get("projectId"), goal: form.get("goal"), mode: form.get("mode") ?? "chat", constraints, files: extracted, sharedKnowledgeIds };
 }

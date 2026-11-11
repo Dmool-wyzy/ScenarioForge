@@ -147,6 +147,7 @@ export default function Home() {
   const navigate = (id: string | null, packageId: string | null = null) => {
     const url = new URL(window.location.href);
     url.hash = "";
+    url.searchParams.delete("workspace");
     if (id) url.searchParams.set("project", id); else url.searchParams.delete("project");
     if (packageId) url.searchParams.set("package", packageId); else url.searchParams.delete("package");
     window.history.pushState(null, "", url);
